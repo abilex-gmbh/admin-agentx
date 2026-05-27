@@ -2,14 +2,17 @@ import { useState } from 'react';
 import { Icon, Switch } from '@clickhouse/click-ui';
 import { PermissionTypes } from 'librechat-data-provider';
 import type * as t from '@/types';
-import { PERMISSION_TYPE_SCHEMA } from '@/constants';
+import { AGENTX_PERMISSION_TYPES, PERMISSION_TYPE_SCHEMA } from '@/constants';
 import { useLocalize } from '@/hooks';
 import { cn } from '@/utils';
 
-const PERMISSION_TYPE_ORDER: PermissionTypes[] = [
+type AdminPermissionType = PermissionTypes | (typeof AGENTX_PERMISSION_TYPES)['WORKBASE'];
+
+const PERMISSION_TYPE_ORDER: AdminPermissionType[] = [
   PermissionTypes.PROMPTS,
   PermissionTypes.AGENTS,
   PermissionTypes.MEMORIES,
+  AGENTX_PERMISSION_TYPES.WORKBASE,
   PermissionTypes.MCP_SERVERS,
   PermissionTypes.REMOTE_AGENTS,
   PermissionTypes.SKILLS,
@@ -35,9 +38,11 @@ export function RolePermissionsPanel({
   disabled,
 }: t.RolePermissionsPanelProps) {
   const localize = useLocalize();
-  const [collapsed, setCollapsed] = useState<Set<PermissionTypes>>(() => new Set(multiPermTypes));
+  const [collapsed, setCollapsed] = useState<Set<AdminPermissionType>>(
+    () => new Set(multiPermTypes),
+  );
 
-  const toggleCollapsed = (type: PermissionTypes) => {
+  const toggleCollapsed = (type: AdminPermissionType) => {
     setCollapsed((prev) => {
       const next = new Set(prev);
       if (next.has(type)) next.delete(type);
@@ -46,13 +51,13 @@ export function RolePermissionsPanel({
     });
   };
 
-  const handleToggle = (type: PermissionTypes, perm: string, value: boolean) => {
+  const handleToggle = (type: AdminPermissionType, perm: string, value: boolean) => {
     const updated = { ...permissions };
     updated[type] = { ...updated[type], [perm]: value };
     onChange(updated);
   };
 
-  const handleToggleAll = (type: PermissionTypes, value: boolean) => {
+  const handleToggleAll = (type: AdminPermissionType, value: boolean) => {
     const updated = { ...permissions };
     const perms = PERMISSION_TYPE_SCHEMA[type];
     const section: Record<string, boolean> = {};

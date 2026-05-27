@@ -1,8 +1,6 @@
-import type { PermissionTypes, TRole } from 'librechat-data-provider';
+import type { TRole } from 'librechat-data-provider';
 
-export type RolePermissions = {
-  [K in PermissionTypes]: Record<string, boolean>;
-};
+export type RolePermissions = Record<string, Record<string, boolean>>;
 
 export interface Role extends Omit<TRole, 'permissions'> {
   id: string;

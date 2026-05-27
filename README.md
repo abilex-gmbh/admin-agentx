@@ -1,12 +1,13 @@
-# LibreChat Admin Panel
+# Admin AgentX
 
-A browser-based management interface for [LibreChat](https://github.com/danny-avila/LibreChat). It connects to the same database as the main application and provides a GUI for tasks that would otherwise require editing `librechat.yaml` directly.
+AgentX's custom fork of the LibreChat Admin Panel. It connects to the customized LibreChat fork in `../chat-agentx` through the `/api/admin/*` API and provides the management UI for AgentX deployments.
 
 ## Features
 
 - **Configuration management** — View and edit all LibreChat settings through a dynamic, schema-driven form. New fields added to the schema appear automatically.
 - **Role and group overrides** — Apply configuration overrides scoped to specific roles or groups, with a priority-based cascade that determines the final resolved value for each user.
 - **User and group administration** — Create and manage groups, assign roles, and control access.
+- **Workbase/Lex permissions** — Assign `READ`, `UPDATE`, `REVIEW`, and `DELETE` permissions for Lex articles through the role editor. Read is enabled by default; edit, review, and delete are explicit grants.
 - **Authentication** — Supports username/password login and OpenID SSO when enabled on the LibreChat instance.
 - **Localization** — Full multi-language support for all UI strings.
 - **Accessibility** — Keyboard navigable with ARIA regions, focus management, and screen reader support.
@@ -20,6 +21,8 @@ cp .env.example .env   # then edit .env
 bun install
 bun dev                 # http://localhost:3000
 ```
+
+From `../chat-agentx`, `npm run frontend:dev` also starts this admin panel for local preview alongside the LibreChat frontend.
 
 ### Docker
 
@@ -59,11 +62,11 @@ plain HTTP, so its OAuth and auth cookies are not dropped either.
 #### Standalone Docker build
 
 ```bash
-docker build -t librechat-admin-panel .
+docker build -t admin-agentx .
 docker run -p 3000:3000 \
   --add-host=host.docker.internal:host-gateway \
   -e SESSION_SECRET=your-secret-here-at-least-32-characters \
   -e VITE_API_BASE_URL=http://host.docker.internal:3080 \
   -e SESSION_COOKIE_SECURE=false \
-  librechat-admin-panel
+  admin-agentx
 ```

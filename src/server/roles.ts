@@ -11,6 +11,7 @@ import { SystemRoles } from 'librechat-data-provider';
 import { createServerFn } from '@tanstack/react-start';
 import type { AdminMember } from '@librechat/data-schemas';
 import type * as t from '@/types';
+import { defaultPermissions } from '@/constants';
 import { apiFetch, extractApiError } from './utils/api';
 import { MEMBERS_PAGE_SIZE } from './groups';
 
@@ -26,6 +27,13 @@ interface RawRole {
 const SYSTEM_ROLE_NAMES = new Set<string>([SystemRoles.ADMIN, SystemRoles.USER]);
 
 function toRole(raw: RawRole): t.Role {
+  const permissions = defaultPermissions();
+  if (raw.permissions && !Array.isArray(raw.permissions)) {
+    for (const [type, values] of Object.entries(raw.permissions)) {
+      permissions[type] = { ...permissions[type], ...values };
+    }
+  }
+
   return {
     id: raw.name,
     name: raw.name,
@@ -33,9 +41,7 @@ function toRole(raw: RawRole): t.Role {
     isSystemRole: SYSTEM_ROLE_NAMES.has(raw.name),
     isActive: true,
     userCount: 0,
-    permissions: (raw.permissions && !Array.isArray(raw.permissions)
-      ? raw.permissions
-      : {}) as t.RolePermissions,
+    permissions,
   };
 }
 

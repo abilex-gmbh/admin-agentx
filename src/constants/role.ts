@@ -1,8 +1,15 @@
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import type * as t from '@/types';
 
+export const AGENTX_PERMISSION_TYPES = {
+  WORKBASE: 'WORKBASE',
+} as const;
+
+type AgentxPermissionType = (typeof AGENTX_PERMISSION_TYPES)[keyof typeof AGENTX_PERMISSION_TYPES];
+type AdminPermissionType = PermissionTypes | AgentxPermissionType;
+
 /** Maps each PermissionType to the subset of Permissions it supports. */
-export const PERMISSION_TYPE_SCHEMA: Record<PermissionTypes, Permissions[]> = {
+export const PERMISSION_TYPE_SCHEMA: Record<AdminPermissionType, Permissions[]> = {
   [PermissionTypes.BOOKMARKS]: [Permissions.USE],
   [PermissionTypes.PROMPTS]: [
     Permissions.USE,
@@ -53,6 +60,12 @@ export const PERMISSION_TYPE_SCHEMA: Record<PermissionTypes, Permissions[]> = {
     Permissions.SHARE,
     Permissions.SHARE_PUBLIC,
   ],
+  [AGENTX_PERMISSION_TYPES.WORKBASE]: [
+    Permissions.READ,
+    Permissions.UPDATE,
+    'REVIEW' as Permissions,
+    'DELETE' as Permissions,
+  ],
 };
 
 export function defaultPermissions(): t.RolePermissions {
@@ -64,5 +77,11 @@ export function defaultPermissions(): t.RolePermissions {
     }
     perms[type] = section;
   }
+  perms[AGENTX_PERMISSION_TYPES.WORKBASE] = {
+    [Permissions.READ]: true,
+    [Permissions.UPDATE]: false,
+    REVIEW: false,
+    DELETE: false,
+  };
   return perms;
 }
