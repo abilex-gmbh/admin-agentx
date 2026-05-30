@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import crypto from 'crypto';
 import { redirect } from '@tanstack/react-router';
 import { queryOptions } from '@tanstack/react-query';
 import { SystemRoles } from 'librechat-data-provider';
@@ -40,6 +39,74 @@ function getRequestOrigin(): string | undefined {
 
   const proto = getRequestHeader('x-forwarded-proto') ?? 'http';
   return `${proto}://${host}`;
+}
+
+function getRequestCookieHeader(): string | undefined {
+  return getRequestHeader('cookie');
+}
+
+function readCookieValue(cookieHeader: string | undefined, name: string): string | undefined {
+  if (!cookieHeader) return undefined;
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${escapedName}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : undefined;
+}
+
+async function bootstrapAdminSessionFromLibreChatCookies(
+  session: Awaited<ReturnType<typeof useAppSession>>,
+) {
+  const cookieHeader = getRequestCookieHeader();
+  if (!cookieHeader) {
+    return undefined;
+  }
+
+  const refreshResponse = await fetch(`${getServerApiUrl()}/api/auth/refresh`, {
+    method: 'POST',
+    headers: { Cookie: cookieHeader },
+  });
+
+  if (!refreshResponse.ok) {
+    return undefined;
+  }
+
+  const contentType = refreshResponse.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    return undefined;
+  }
+
+  const refreshData = (await refreshResponse.json()) as Partial<t.AdminLoginResponse>;
+  if (!refreshData.token || !refreshData.user) {
+    return undefined;
+  }
+
+  const verifyResponse = await fetch(`${getServerApiUrl()}/api/admin/verify`, {
+    headers: { Authorization: `Bearer ${refreshData.token}` },
+  });
+
+  if (!verifyResponse.ok) {
+    return undefined;
+  }
+
+  const verifyData = (await verifyResponse.json()) as { user?: t.SerializableUser };
+  const user = verifyData.user ?? refreshData.user;
+  if (user.role !== SystemRoles.ADMIN) {
+    return undefined;
+  }
+
+  const now = Date.now();
+  await session.update({
+    user,
+    token: refreshData.token,
+    refreshToken:
+      extractCookieValue(refreshResponse, 'refreshToken') ??
+      readCookieValue(cookieHeader, 'refreshToken'),
+    tokenProvider:
+      readCookieValue(cookieHeader, 'token_provider') === 'openid' ? 'openid' : 'librechat',
+    lastVerified: now,
+    lastActivity: now,
+  });
+
+  return user;
 }
 
 export const adminLoginFn = createServerFn({ method: 'POST' })
@@ -180,6 +247,10 @@ export const verifyAdminTokenFn = createServerFn({ method: 'GET' }).handler(asyn
     const { token, user, lastVerified, lastActivity, refreshToken, tokenProvider } = session.data;
 
     if (!token || !user) {
+      const bootstrappedUser = await bootstrapAdminSessionFromLibreChatCookies(session);
+      if (bootstrappedUser) {
+        return { valid: true, user: bootstrappedUser };
+      }
       return { valid: false, error: 'No session found' };
     }
 
@@ -346,20 +417,8 @@ export const checkOpenIdFn = createServerFn({ method: 'GET' }).handler(async () 
 export const openidLoginFn = createServerFn({ method: 'GET' }).handler(async () => {
   try {
     const baseUrl = getApiBaseUrl();
-    const authUrl = new URL(`${baseUrl}/api/admin/oauth/openid`);
-    const requestOrigin = getRequestOrigin();
-
-    const codeVerifier = crypto.randomBytes(32).toString('hex');
-    const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('hex');
-    authUrl.searchParams.set('code_challenge', codeChallenge);
-    if (requestOrigin)
-      authUrl.searchParams.set(
-        'redirect_uri',
-        `${requestOrigin}${getAdminBasePath()}/auth/openid/callback`,
-      );
-
-    const session = await useAppSession();
-    await session.update({ codeVerifier });
+    const authUrl = new URL(`${baseUrl}/login`);
+    authUrl.searchParams.set('redirect_to', getAdminBasePath() || '/');
 
     return { error: false, authUrl: authUrl.toString() };
   } catch (error) {

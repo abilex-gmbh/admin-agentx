@@ -64,7 +64,11 @@ export function AuthCard({
         }
         const authUrl = new URL(result.authUrl);
         if (redirectTo && redirectTo !== '/') {
-          authUrl.searchParams.set('redirectTo', redirectTo);
+          const baseRedirect = authUrl.searchParams.get('redirect_to') ?? '';
+          authUrl.searchParams.set(
+            'redirect_to',
+            `${baseRedirect.replace(/\/$/, '')}/${redirectTo.replace(/^\//, '')}`,
+          );
         }
         window.location.href = authUrl.toString();
       })
@@ -201,7 +205,15 @@ export function AuthCard({
         return;
       }
       if (result.authUrl) {
-        window.location.href = result.authUrl;
+        const authUrl = new URL(result.authUrl);
+        if (redirectTo && redirectTo !== '/') {
+          const baseRedirect = authUrl.searchParams.get('redirect_to') ?? '';
+          authUrl.searchParams.set(
+            'redirect_to',
+            `${baseRedirect.replace(/\/$/, '')}/${redirectTo.replace(/^\//, '')}`,
+          );
+        }
+        window.location.href = authUrl.toString();
       }
     } catch {
       setGeneralError(localize('com_auth_unable_connect'));
