@@ -3,7 +3,8 @@ import { createRouter as createTanStackRouter } from '@tanstack/react-router';
 import { setupRouterSsrQueryIntegration } from '@tanstack/react-router-ssr-query';
 import { routeTree } from './routeTree.gen';
 
-const adminBasePath = import.meta.env.BASE_URL === '/' ? undefined : import.meta.env.BASE_URL;
+const adminBasePath =
+  import.meta.env.BASE_URL === '/' ? undefined : import.meta.env.BASE_URL.replace(/\/$/, '');
 
 export function getRouter() {
   const queryClient = new QueryClient();

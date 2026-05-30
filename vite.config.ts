@@ -1,16 +1,13 @@
-import path from 'node:path'
-import { defineConfig } from 'vite'
-import { devtools } from '@tanstack/devtools-vite'
-import { tanstackStart } from '@tanstack/react-start/plugin/vite'
+import path from 'node:path';
+import { defineConfig } from 'vite';
+import { devtools } from '@tanstack/devtools-vite';
+import { tanstackStart } from '@tanstack/react-start/plugin/vite';
 
-import viteReact from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
+import viteReact from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
-const adminBasePath = process.env.ADMIN_BASE_PATH?.trim() || '/'
-const viteBase =
-  adminBasePath === '/'
-    ? '/'
-    : `/${adminBasePath.replace(/^\/+|\/+$/g, '')}/`
+const adminBasePath = process.env.ADMIN_BASE_PATH?.trim() || '/';
+const viteBase = adminBasePath === '/' ? '/' : `/${adminBasePath.replace(/^\/+|\/+$/g, '')}/`;
 
 const config = defineConfig({
   base: viteBase,
@@ -102,6 +99,6 @@ const config = defineConfig({
     external: ['@playwright/test', 'playwright-core', 'playwright', '@axe-core/playwright'],
     noExternal: ['@clickhouse/click-ui'],
   },
-})
+});
 
-export default config
+export default config;

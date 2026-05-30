@@ -16,7 +16,8 @@ import { ThemeProvider, useTheme } from '../contexts/ThemeContext';
 import appCss from '../styles.css?url';
 import { useLocalize } from '@/hooks';
 
-const adminBasePath = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '');
+const adminBasePath =
+  import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '');
 
 const themeScript = `(function(){
   try {

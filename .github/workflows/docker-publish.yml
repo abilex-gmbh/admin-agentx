@@ -73,5 +73,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64
           target: runtime
+          build-args: |
+            ADMIN_BASE_PATH=/admin
           cache-from: type=gha
           cache-to: type=gha,mode=max
