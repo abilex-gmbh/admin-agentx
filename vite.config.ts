@@ -6,7 +6,14 @@ import { tanstackStart } from '@tanstack/react-start/plugin/vite'
 import viteReact from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+const adminBasePath = process.env.ADMIN_BASE_PATH?.trim() || '/'
+const viteBase =
+  adminBasePath === '/'
+    ? '/'
+    : `/${adminBasePath.replace(/^\/+|\/+$/g, '')}/`
+
 const config = defineConfig({
+  base: viteBase,
   plugins: [
     devtools(),
     tailwindcss(),

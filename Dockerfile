@@ -13,6 +13,8 @@ RUN bun install --frozen-lockfile
 FROM base AS build
 COPY --from=deps /app/node_modules node_modules
 COPY . .
+ARG ADMIN_BASE_PATH=/
+ENV ADMIN_BASE_PATH=${ADMIN_BASE_PATH}
 ENV NODE_ENV=production
 RUN bun run build
 

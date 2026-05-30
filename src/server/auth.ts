@@ -6,7 +6,7 @@ import { SystemRoles } from 'librechat-data-provider';
 import { createServerFn } from '@tanstack/react-start';
 import { getRequestHeader } from '@tanstack/react-start/server';
 import type * as t from '@/types';
-import { getApiBaseUrl, getServerApiUrl } from './utils/url';
+import { getAdminBasePath, getApiBaseUrl, getServerApiUrl } from './utils/url';
 import { buildOAuthExchangePayload } from './utils/oauth';
 import { refreshAdminTokenDeduped } from './utils/refresh';
 import { useAppSession, SESSION_CONFIG } from './session';
@@ -353,7 +353,10 @@ export const openidLoginFn = createServerFn({ method: 'GET' }).handler(async () 
     const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('hex');
     authUrl.searchParams.set('code_challenge', codeChallenge);
     if (requestOrigin)
-      authUrl.searchParams.set('redirect_uri', `${requestOrigin}/auth/openid/callback`);
+      authUrl.searchParams.set(
+        'redirect_uri',
+        `${requestOrigin}${getAdminBasePath()}/auth/openid/callback`,
+      );
 
     const session = await useAppSession();
     await session.update({ codeVerifier });

@@ -11,6 +11,7 @@ const CLIENT_DIR = join(import.meta.dir, 'dist', 'client');
 const SERVER_ENTRY = new URL('./dist/server/server.js', import.meta.url);
 
 const env = process.env;
+const adminBasePath = normalizeBasePath(env.ADMIN_BASE_PATH);
 
 const ONE_DAY = 86400;
 const rawMaxAge = Number(env.ADMIN_PANEL_STATIC_CACHE_MAX_AGE ?? env.STATIC_CACHE_MAX_AGE);
@@ -32,6 +33,12 @@ const LONG_CACHE: Record<string, string> = {
 };
 
 const NEVER_CACHE = new Set(['manifest.json', 'sw.js', 'robots.txt']);
+
+function normalizeBasePath(raw: string | undefined): string {
+  const trimmed = raw?.trim();
+  if (!trimmed || trimmed === '/') return '';
+  return `/${trimmed.replace(/^\/+|\/+$/g, '')}`;
+}
 
 function getCacheHeaders(filePath: string): Record<string, string> {
   const fileName = filePath.split('/').pop() ?? '';
@@ -64,12 +71,21 @@ async function buildStaticRoutes(): Promise<Record<string, (req: Request) => Pro
     const file = Bun.file(`${CLIENT_DIR}/${path}`);
     const cache = getCacheHeaders(path);
     const routePath = `/${path}`;
+    const prefixedRoutePath = `${adminBasePath}${routePath}`;
     routes[routePath] = (req) =>
       withHttpMetrics(
         req,
         routePath,
         () => new Response(file, { headers: { 'Content-Type': file.type, ...cache } }),
       );
+    if (adminBasePath) {
+      routes[prefixedRoutePath] = (req) =>
+        withHttpMetrics(
+          req,
+          prefixedRoutePath,
+          () => new Response(file, { headers: { 'Content-Type': file.type, ...cache } }),
+        );
+    }
   }
   return routes;
 }

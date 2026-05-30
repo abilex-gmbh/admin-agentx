@@ -8,6 +8,16 @@ export function getApiBaseUrl(): string {
   return 'http://localhost:3080';
 }
 
+export function getAdminBasePath(): string {
+  const raw =
+    (typeof process !== 'undefined' && process.env?.ADMIN_BASE_PATH) ||
+    (typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL) ||
+    '/';
+  const normalized = raw.trim();
+  if (!normalized || normalized === '/') return '';
+  return `/${normalized.replace(/^\/+|\/+$/g, '')}`;
+}
+
 /** Server-to-server API URL. Falls back to getApiBaseUrl() if API_SERVER_URL is not set. */
 export function getServerApiUrl(): string {
   if (typeof process !== 'undefined' && process.env?.API_SERVER_URL) {

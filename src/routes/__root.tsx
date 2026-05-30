@@ -16,6 +16,8 @@ import { ThemeProvider, useTheme } from '../contexts/ThemeContext';
 import appCss from '../styles.css?url';
 import { useLocalize } from '@/hooks';
 
+const adminBasePath = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '');
+
 const themeScript = `(function(){
   try {
     var t = localStorage.getItem('theme') || 'system';
@@ -46,7 +48,7 @@ export const Route = createRootRoute({
       },
       {
         rel: 'icon',
-        href: '/favicon.ico',
+        href: `${adminBasePath}/favicon.ico`,
       },
     ],
   }),
