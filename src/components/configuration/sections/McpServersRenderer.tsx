@@ -269,7 +269,7 @@ function FieldGroupSection({
         >
           <span
             className={cn(
-              'flex shrink-0 items-center justify-center transition-transform duration-200',
+              'flex shrink-0 items-center justify-center transition-transform duration-100',
               isExpanded && 'rotate-90',
             )}
           >
@@ -326,7 +326,7 @@ function FieldGroup({
         >
           <span
             className={cn(
-              'flex shrink-0 items-center justify-center transition-transform duration-200',
+              'flex shrink-0 items-center justify-center transition-transform duration-100',
               isExpanded && 'rotate-90',
             )}
           >

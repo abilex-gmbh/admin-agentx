@@ -287,7 +287,7 @@ code {
 }
 
 .cmdk-highlight {
-  animation: cmdk-flash 3s ease forwards;
+  animation: cmdk-flash 2s ease forwards;
 }
 
 @keyframes slideUp {
@@ -837,7 +837,7 @@ input[type='number'].config-input::-webkit-outer-spin-button {
   border: 2px solid color-mix(in srgb, var(--cui-color-text-on-accent) 30%, transparent);
   border-top-color: var(--cui-color-text-on-accent);
   border-radius: 50%;
-  animation: toast-spin 600ms linear infinite;
+  animation: toast-spin 400ms linear infinite;
 }
 
 @keyframes toast-in {

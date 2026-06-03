@@ -104,7 +104,7 @@ export function ConfigSection({
       >
         <span
           className={cn(
-            'mt-0.5 flex shrink-0 items-center justify-center transition-transform duration-200',
+            'mt-0.5 flex shrink-0 items-center justify-center transition-transform duration-100',
             isExpanded && 'rotate-90',
           )}
         >

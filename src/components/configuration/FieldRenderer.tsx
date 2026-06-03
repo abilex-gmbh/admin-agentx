@@ -603,15 +603,13 @@ export function NestedGroup({
         >
           <span
             className={cn(
-              'flex shrink-0 items-center justify-center transition-transform duration-200',
+              'flex shrink-0 items-center justify-center transition-transform duration-100',
               isExpanded && 'rotate-90',
             )}
           >
             <Icon name="chevron-right" size="xs" />
           </span>
-          <span className="text-sm font-medium text-(--cui-color-text-default)">
-            {label}
-          </span>
+          <span className="text-sm font-medium text-(--cui-color-text-default)">{label}</span>
           {totalCount > 0 && (
             <span
               className={cn(

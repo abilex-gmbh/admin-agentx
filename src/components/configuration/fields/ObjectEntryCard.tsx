@@ -32,7 +32,6 @@ export function ObjectEntryCard({
     if (isExpanded && !hasEverExpanded) setHasEverExpanded(true);
   }, [isExpanded, hasEverExpanded]);
 
-
   // Track whether renderFields registered an addFieldTrigger.
   // Runs every render because the ref is populated by children after mount.
   useEffect(() => {
@@ -118,7 +117,7 @@ export function ObjectEntryCard({
       >
         <span
           className={cn(
-            'flex shrink-0 items-center justify-center transition-transform duration-200',
+            'flex shrink-0 items-center justify-center transition-transform duration-100',
             isExpanded && 'rotate-90',
           )}
         >
