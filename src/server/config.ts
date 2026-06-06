@@ -129,7 +129,6 @@ function inferRecordKVTypes(schema: t.ZodSchemaLike): t.KVValueType[] | undefine
   return types.size > 0 ? [...types] : undefined;
 }
 
-
 /** Merges fields from union object variants into a single list.
  *  When the same key appears in multiple variants with different literal
  *  types, the literals are combined into a union(literal(...) | literal(...))
@@ -454,6 +453,52 @@ export function getZodTypeName(
   return typeName || 'unknown';
 }
 
+/** Synthesizes a union without z.union to avoid the zod v3/v4 cross-version pitfall. */
+function anyOfSchema(candidates: t.ZodSchemaLike[]): t.ZodSchemaLike {
+  type ParseResult = {
+    success: boolean;
+    error?: { issues: Array<{ message: string; path: (string | number)[] }> };
+  };
+  const safeParse = (value: unknown): ParseResult => {
+    const errors: NonNullable<ParseResult['error']>[] = [];
+    for (const candidate of candidates) {
+      const c = candidate as t.ZodSchemaLike & {
+        safeParse?: (v: unknown) => ParseResult;
+      };
+      if (typeof c.safeParse !== 'function') continue;
+      let result: ParseResult;
+      try {
+        result = c.safeParse(value);
+      } catch (e) {
+        errors.push({
+          issues: [{ message: e instanceof Error ? e.message : 'Validation failed', path: [] }],
+        });
+        continue;
+      }
+      if (result.success) return { success: true };
+      if (result.error) errors.push(result.error);
+    }
+    /** Pick the branch with the fewest issues (most likely the intended one); tiebreak on longest path. */
+    const sorted = errors
+      .filter((e): e is NonNullable<typeof e> => e != null && Array.isArray(e.issues))
+      .sort((a, b) => {
+        const ca = a.issues?.length ?? Infinity;
+        const cb = b.issues?.length ?? Infinity;
+        if (ca !== cb) return ca - cb;
+        const pa = Math.max(0, ...(a.issues ?? []).map((i) => i.path?.length ?? 0));
+        const pb = Math.max(0, ...(b.issues ?? []).map((i) => i.path?.length ?? 0));
+        return pb - pa;
+      });
+    const best = sorted[0];
+    return {
+      success: false,
+      error: best ?? { issues: [{ message: 'Validation failed', path: [] }] },
+    };
+  };
+  /** _def.options is preserved so resolveSubSchema can keep traversing into nested fields under union branches; without it, the next segment short-circuits and validateFieldValue silently passes everything. */
+  return { _def: { typeName: 'ZodUnion', options: candidates }, safeParse } as t.ZodSchemaLike;
+}
+
 /** Walks a Zod schema tree to find the sub-schema at a given dot-path.
  *  Returns the schema **with wrappers intact** so `.safeParse()` runs the
  *  full validation chain (refine, transform, pipe). Returns `null` if the
@@ -484,16 +529,18 @@ export function resolveSubSchema(
       current = valueType;
     } else if (typeName === 'ZodUnion') {
       const options = unwrapped._def.options ?? [];
-      let found: t.ZodSchemaLike | null = null;
+      const candidates: t.ZodSchemaLike[] = [];
       for (const opt of options) {
-        const optUnwrapped = unwrapSchema(opt);
-        if (optUnwrapped?.shape?.[segment]) {
-          found = optUnwrapped.shape[segment];
-          break;
-        }
+        /** Recurse so options that are records, arrays, or further unions resolve through their own walker case, not just shape lookup. */
+        const resolved = resolveSubSchema(opt, [segment]);
+        if (resolved) candidates.push(resolved);
       }
-      if (!found) return null;
-      current = found;
+      if (candidates.length === 0) return null;
+      if (candidates.length === 1) {
+        current = candidates[0];
+      } else {
+        current = anyOfSchema(candidates);
+      }
     } else if (typeName === 'ZodIntersection') {
       const resolved = resolveIntersection(unwrapped);
       if (!resolved?.shape?.[segment]) return null;
@@ -761,8 +808,9 @@ function normalizeAppServiceKeys(
 }
 
 export const getBaseConfigFn = createServerFn({ method: 'GET' }).handler(async () => {
-  const [baseResponse, dbBaseResponse] = await Promise.all([
+  const [baseResponse, baseOnlyResponse, dbBaseResponse] = await Promise.all([
     apiFetch('/api/admin/config/base'),
+    apiFetch('/api/admin/config/base?baseOnly=true'),
     apiFetch(`/api/admin/config/role/${BASE_CONFIG_PRINCIPAL_ID}`),
   ]);
 
@@ -792,7 +840,29 @@ export const getBaseConfigFn = createServerFn({ method: 'GET' }).handler(async (
     dbOverrides = dbConfig.overrides as Record<string, t.ConfigValue>;
   }
 
-  return { config, dbOverrides, configuredFromBase, schemaDefaults: flatDefaults };
+  let yamlMcpKeys: string[] | undefined;
+  let yamlMcpServers: Record<string, t.ConfigValue> | undefined;
+  if (baseOnlyResponse.ok) {
+    const { config: baseOnlyRaw } = (await baseOnlyResponse.json()) as {
+      config: Record<string, t.ConfigValue>;
+    };
+    const baseOnly = normalizeAppServiceKeys(baseOnlyRaw);
+    const mcp = baseOnly.mcpServers;
+    if (mcp && typeof mcp === 'object' && !Array.isArray(mcp)) {
+      /** Trust the baseOnly response when it has a valid mcpServers shape. The previous byte-equality fallback against `config.mcpServers` was a defensive heuristic for hypothetical legacy backends that ignore `?baseOnly`, but it false-negatived whenever an admin override happened to be a no-op (e.g. an admin set `title` to a value that already matched YAML), causing the YAML lock affordances to disappear for entries that should stay locked. The deployed LibreChat supports `?baseOnly` directly, so the heuristic is no longer earning its keep. */
+      yamlMcpServers = mcp as Record<string, t.ConfigValue>;
+      yamlMcpKeys = Object.keys(yamlMcpServers);
+    }
+  }
+
+  return {
+    config,
+    dbOverrides,
+    configuredFromBase,
+    schemaDefaults: flatDefaults,
+    yamlMcpKeys,
+    yamlMcpServers,
+  };
 });
 
 export const baseConfigOptions = queryOptions({
@@ -833,7 +903,10 @@ async function mergeIndexedArrayEntries(
     const segments = arrayPath.split('.');
     let current: unknown = baseConfig;
     for (const seg of segments) {
-      if (current == null || typeof current !== 'object') { current = undefined; break; }
+      if (current == null || typeof current !== 'object') {
+        current = undefined;
+        break;
+      }
       current = (current as Record<string, unknown>)[seg];
     }
     const arr = Array.isArray(current) ? [...current] : [];
@@ -853,7 +926,7 @@ export const saveBaseConfigFn = createServerFn({ method: 'POST' })
       entries: z
         .array(z.object({ fieldPath: safeFieldPath, value: z.unknown() }))
         .min(1)
-        .max(100),
+        .max(500),
     }),
   )
   .handler(async ({ data }) => {
