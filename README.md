@@ -72,3 +72,21 @@ docker run -p 3000:3000 \
   -e SESSION_COOKIE_SECURE=false \
   admin-agentx
 ```
+
+#### Publishing deployment images
+
+The GitHub workflow publishes `ghcr.io/abilex-gmbh/admin-agentx:latest` from
+`main` and can also publish pinned deployment tags.
+
+To publish a pinned tag from GitHub Actions:
+
+```bash
+gh workflow run docker-publish.yml --ref main -f image_tag=v0.1.0
+```
+
+Pushing a matching git tag also publishes the same image tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
