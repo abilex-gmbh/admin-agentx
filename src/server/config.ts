@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import yaml from 'js-yaml';
 import { queryOptions } from '@tanstack/react-query';
-import { AppService } from '@librechat/data-schemas';
 import { configSchema } from 'librechat-data-provider';
 import { createServerFn } from '@tanstack/react-start';
 import { SystemCapabilities } from '@librechat/data-schemas/capabilities';
@@ -30,6 +29,9 @@ const WRAPPER_TYPES = new Set([
   'ZodLazy',
   'ZodPipeline',
 ]);
+
+const INDEXED_ARRAY_RE = /^(.+)\.(\d+)$/;
+const ARRAY_INDEX_KEY_RE = /^(0|[1-9]\d*)$/;
 
 function unwrapSchema(schema: t.ZodSchemaLike): t.ZodSchemaLike {
   const seen = new Set<t.ZodSchemaLike>();
@@ -128,7 +130,6 @@ function inferRecordKVTypes(schema: t.ZodSchemaLike): t.KVValueType[] | undefine
   }
   return types.size > 0 ? [...types] : undefined;
 }
-
 
 /** Merges fields from union object variants into a single list.
  *  When the same key appears in multiple variants with different literal
@@ -454,6 +455,52 @@ export function getZodTypeName(
   return typeName || 'unknown';
 }
 
+/** Synthesizes a union without z.union to avoid the zod v3/v4 cross-version pitfall. */
+function anyOfSchema(candidates: t.ZodSchemaLike[]): t.ZodSchemaLike {
+  type ParseResult = {
+    success: boolean;
+    error?: { issues: Array<{ message: string; path: (string | number)[] }> };
+  };
+  const safeParse = (value: unknown): ParseResult => {
+    const errors: NonNullable<ParseResult['error']>[] = [];
+    for (const candidate of candidates) {
+      const c = candidate as t.ZodSchemaLike & {
+        safeParse?: (v: unknown) => ParseResult;
+      };
+      if (typeof c.safeParse !== 'function') continue;
+      let result: ParseResult;
+      try {
+        result = c.safeParse(value);
+      } catch (e) {
+        errors.push({
+          issues: [{ message: e instanceof Error ? e.message : 'Validation failed', path: [] }],
+        });
+        continue;
+      }
+      if (result.success) return { success: true };
+      if (result.error) errors.push(result.error);
+    }
+    /** Pick the branch with the fewest issues (most likely the intended one); tiebreak on longest path. */
+    const sorted = errors
+      .filter((e): e is NonNullable<typeof e> => e != null && Array.isArray(e.issues))
+      .sort((a, b) => {
+        const ca = a.issues?.length ?? Infinity;
+        const cb = b.issues?.length ?? Infinity;
+        if (ca !== cb) return ca - cb;
+        const pa = Math.max(0, ...(a.issues ?? []).map((i) => i.path?.length ?? 0));
+        const pb = Math.max(0, ...(b.issues ?? []).map((i) => i.path?.length ?? 0));
+        return pb - pa;
+      });
+    const best = sorted[0];
+    return {
+      success: false,
+      error: best ?? { issues: [{ message: 'Validation failed', path: [] }] },
+    };
+  };
+  /** _def.options is preserved so resolveSubSchema can keep traversing into nested fields under union branches; without it, the next segment short-circuits and validateFieldValue silently passes everything. */
+  return { _def: { typeName: 'ZodUnion', options: candidates }, safeParse } as t.ZodSchemaLike;
+}
+
 /** Walks a Zod schema tree to find the sub-schema at a given dot-path.
  *  Returns the schema **with wrappers intact** so `.safeParse()` runs the
  *  full validation chain (refine, transform, pipe). Returns `null` if the
@@ -484,16 +531,18 @@ export function resolveSubSchema(
       current = valueType;
     } else if (typeName === 'ZodUnion') {
       const options = unwrapped._def.options ?? [];
-      let found: t.ZodSchemaLike | null = null;
+      const candidates: t.ZodSchemaLike[] = [];
       for (const opt of options) {
-        const optUnwrapped = unwrapSchema(opt);
-        if (optUnwrapped?.shape?.[segment]) {
-          found = optUnwrapped.shape[segment];
-          break;
-        }
+        /** Recurse so options that are records, arrays, or further unions resolve through their own walker case, not just shape lookup. */
+        const resolved = resolveSubSchema(opt, [segment]);
+        if (resolved) candidates.push(resolved);
       }
-      if (!found) return null;
-      current = found;
+      if (candidates.length === 0) return null;
+      if (candidates.length === 1) {
+        current = candidates[0];
+      } else {
+        current = anyOfSchema(candidates);
+      }
     } else if (typeName === 'ZodIntersection') {
       const resolved = resolveIntersection(unwrapped);
       if (!resolved?.shape?.[segment]) return null;
@@ -535,6 +584,62 @@ export function validateFieldValue(
   }
 
   return { success: true };
+}
+
+export function parseIndexedArrayPath(
+  fieldPath: string,
+): { arrayPath: string; index: number } | null {
+  const match = INDEXED_ARRAY_RE.exec(fieldPath);
+  if (!match) return null;
+  const [, arrayPath, indexStr] = match;
+  const schema = resolveSubSchema(configSchema as t.ZodSchemaLike, arrayPath.split('.'));
+  if (!schema) return null;
+  const unwrapped = unwrapSchema(schema);
+  if (unwrapped?._def?.typeName !== 'ZodArray') return null;
+  return { arrayPath, index: Number(indexStr) };
+}
+
+export function toConfigArraySource(value: unknown): unknown[] | undefined {
+  if (Array.isArray(value)) return [...value];
+  return toIndexedArrayObjectSource(value);
+}
+
+export function toIndexedArrayObjectSource(value: unknown): unknown[] | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  if (Array.isArray(value)) return undefined;
+  const arrayValue: unknown[] = [];
+  for (const [key, entryValue] of Object.entries(value as Record<string, t.ConfigValue>)) {
+    if (!ARRAY_INDEX_KEY_RE.test(key)) return undefined;
+    const index = Number(key);
+    if (!Number.isSafeInteger(index)) return undefined;
+    arrayValue[index] = entryValue;
+  }
+  return arrayValue;
+}
+
+function overlayArraySource(source: unknown[], overlay: unknown[]): unknown[] {
+  const result = [...source];
+  for (const key of Object.keys(overlay)) {
+    const index = Number(key);
+    result[index] = overlay[index];
+  }
+  return result;
+}
+
+function mergeConfigArraySource(source: unknown[], value: unknown): unknown[] {
+  if (Array.isArray(value)) return [...value];
+  const overlay = toIndexedArrayObjectSource(value);
+  return overlay ? overlayArraySource(source, overlay) : source;
+}
+
+export function mergeConfigArraySources(
+  baseValue: unknown,
+  overrideValue: unknown,
+  pendingValue: unknown,
+): unknown[] {
+  const baseSource = toConfigArraySource(baseValue) ?? [];
+  const overrideSource = mergeConfigArraySource(baseSource, overrideValue);
+  return mergeConfigArraySource(overrideSource, pendingValue);
 }
 
 /** Shared queryOptions for the schema tree used by command palette search. */
@@ -605,22 +710,23 @@ export const parseImportedYaml = createServerFn({ method: 'POST' })
       };
     }
 
-    try {
-      const appConfig = await AppService({ config: result.data });
-      return { success: true, error: undefined, validationErrors: undefined, appConfig };
-    } catch (appServiceError) {
-      console.warn(
-        'AppService failed for imported config, falling back to raw config:',
-        appServiceError instanceof Error ? appServiceError.message : appServiceError,
-      );
-      const fallbackConfig = result.data;
-      return {
-        success: true,
-        error: undefined,
-        validationErrors: undefined,
-        appConfig: fallbackConfig,
-      };
-    }
+    /**
+     * `librechat-data-provider` and `@librechat/data-schemas` both migrated
+     * to tsdown (upstream #13578, #13597) and now ship dual `.d.cts` + `.d.mts`
+     * declaration files. Under `moduleResolution: bundler`, TS treats
+     * `TCustomConfig` resolved through one declaration path as nominally
+     * distinct from `TCustomConfig` resolved through the other, even when
+     * structurally identical. That collision shows up here as "Two different
+     * types with this name exist, but they are unrelated" in the ServerFn
+     * registration. The consumer (ImportYamlDialog) treats appConfig as
+     * `Record<string, ConfigValue>`, so widening the return is the local fix.
+     */
+    return {
+      success: true,
+      error: undefined,
+      validationErrors: undefined,
+      appConfig: result.data as Record<string, t.ConfigValue>,
+    };
   });
 
 function getFieldDefault(schema: t.ZodSchemaLike): { hasDefault: boolean; value: unknown } {
@@ -730,7 +836,7 @@ function normalizeEndpointValue(value: t.ConfigValue): t.ConfigValue {
   return value;
 }
 
-function normalizeAppServiceKeys(
+export function normalizeAppServiceKeys(
   raw: Record<string, t.ConfigValue>,
 ): Record<string, t.ConfigValue> {
   const result: Record<string, t.ConfigValue> = {};
@@ -761,8 +867,9 @@ function normalizeAppServiceKeys(
 }
 
 export const getBaseConfigFn = createServerFn({ method: 'GET' }).handler(async () => {
-  const [baseResponse, dbBaseResponse] = await Promise.all([
+  const [baseResponse, baseOnlyResponse, dbBaseResponse] = await Promise.all([
     apiFetch('/api/admin/config/base'),
+    apiFetch('/api/admin/config/base?baseOnly=true'),
     apiFetch(`/api/admin/config/role/${BASE_CONFIG_PRINCIPAL_ID}`),
   ]);
 
@@ -792,7 +899,29 @@ export const getBaseConfigFn = createServerFn({ method: 'GET' }).handler(async (
     dbOverrides = dbConfig.overrides as Record<string, t.ConfigValue>;
   }
 
-  return { config, dbOverrides, configuredFromBase, schemaDefaults: flatDefaults };
+  let yamlMcpKeys: string[] | undefined;
+  let yamlMcpServers: Record<string, t.ConfigValue> | undefined;
+  if (baseOnlyResponse.ok) {
+    const { config: baseOnlyRaw } = (await baseOnlyResponse.json()) as {
+      config: Record<string, t.ConfigValue>;
+    };
+    const baseOnly = normalizeAppServiceKeys(baseOnlyRaw);
+    const mcp = baseOnly.mcpServers;
+    if (mcp && typeof mcp === 'object' && !Array.isArray(mcp)) {
+      /** Trust the baseOnly response when it has a valid mcpServers shape. The previous byte-equality fallback against `config.mcpServers` was a defensive heuristic for hypothetical legacy backends that ignore `?baseOnly`, but it false-negatived whenever an admin override happened to be a no-op (e.g. an admin set `title` to a value that already matched YAML), causing the YAML lock affordances to disappear for entries that should stay locked. The deployed LibreChat supports `?baseOnly` directly, so the heuristic is no longer earning its keep. */
+      yamlMcpServers = mcp as Record<string, t.ConfigValue>;
+      yamlMcpKeys = Object.keys(yamlMcpServers);
+    }
+  }
+
+  return {
+    config,
+    dbOverrides,
+    configuredFromBase,
+    schemaDefaults: flatDefaults,
+    yamlMcpKeys,
+    yamlMcpServers,
+  };
 });
 
 export const baseConfigOptions = queryOptions({
@@ -801,42 +930,39 @@ export const baseConfigOptions = queryOptions({
   staleTime: 30_000,
 });
 
-const INDEXED_ARRAY_RE = /^(.+)\.(\d+)$/;
-
-async function mergeIndexedArrayEntries(
+export function mergeIndexedArrayEntriesIntoBase(
   entries: Array<{ fieldPath: string; value: unknown }>,
+  baseConfig: Record<string, t.ConfigValue>,
   mergedPaths?: Set<string>,
-): Promise<Array<{ fieldPath: string; value: unknown }>> {
+): Array<{ fieldPath: string; value: unknown }> {
   const indexed = new Map<string, Map<number, unknown>>();
   const rest: Array<{ fieldPath: string; value: unknown }> = [];
 
   for (const entry of entries) {
-    const match = INDEXED_ARRAY_RE.exec(entry.fieldPath);
-    if (match) {
-      const [, arrayPath, indexStr] = match;
+    const parsed = parseIndexedArrayPath(entry.fieldPath);
+    if (parsed) {
+      const { arrayPath, index } = parsed;
       if (!indexed.has(arrayPath)) indexed.set(arrayPath, new Map());
-      indexed.get(arrayPath)!.set(Number(indexStr), entry.value);
+      indexed.get(arrayPath)!.set(index, entry.value);
     } else {
       rest.push(entry);
     }
   }
 
   if (indexed.size === 0) return entries;
-
-  const baseResponse = await apiFetch('/api/admin/config/base');
-  if (!baseResponse.ok) throw new Error(`Failed to fetch base config: ${baseResponse.status}`);
-  const { config: baseConfig } = (await baseResponse.json()) as {
-    config: Record<string, unknown>;
-  };
+  const normalizedBaseConfig = normalizeAppServiceKeys(baseConfig);
 
   for (const [arrayPath, updates] of indexed) {
     const segments = arrayPath.split('.');
-    let current: unknown = baseConfig;
+    let current: unknown = normalizedBaseConfig;
     for (const seg of segments) {
-      if (current == null || typeof current !== 'object') { current = undefined; break; }
+      if (current == null || typeof current !== 'object') {
+        current = undefined;
+        break;
+      }
       current = (current as Record<string, unknown>)[seg];
     }
-    const arr = Array.isArray(current) ? [...current] : [];
+    const arr = toConfigArraySource(current) ?? [];
     for (const [idx, value] of updates) {
       arr[idx] = value;
     }
@@ -847,13 +973,33 @@ async function mergeIndexedArrayEntries(
   return rest;
 }
 
+function hasIndexedArrayEntry(entries: Array<{ fieldPath: string; value: unknown }>): boolean {
+  for (const entry of entries) {
+    if (parseIndexedArrayPath(entry.fieldPath)) return true;
+  }
+  return false;
+}
+
+async function mergeIndexedArrayEntries(
+  entries: Array<{ fieldPath: string; value: unknown }>,
+  mergedPaths?: Set<string>,
+): Promise<Array<{ fieldPath: string; value: unknown }>> {
+  if (!hasIndexedArrayEntry(entries)) return entries;
+  const baseResponse = await apiFetch('/api/admin/config/base');
+  if (!baseResponse.ok) throw new Error(`Failed to fetch base config: ${baseResponse.status}`);
+  const { config: baseConfig } = (await baseResponse.json()) as {
+    config: Record<string, t.ConfigValue>;
+  };
+  return mergeIndexedArrayEntriesIntoBase(entries, baseConfig, mergedPaths);
+}
+
 export const saveBaseConfigFn = createServerFn({ method: 'POST' })
   .inputValidator(
     z.object({
       entries: z
         .array(z.object({ fieldPath: safeFieldPath, value: z.unknown() }))
         .min(1)
-        .max(100),
+        .max(500),
     }),
   )
   .handler(async ({ data }) => {
@@ -950,3 +1096,23 @@ export const resetBaseConfigFieldFn = createServerFn({ method: 'POST' })
 
     return { success: true };
   });
+
+/** Deletes the entire base config DB override, reverting every value back to
+ *  what librechat.yaml defines. Removes the `__base__` config document outright;
+ *  scope (role/group/user) profiles are untouched. A 404 means there was no
+ *  override to begin with, which is treated as success. */
+export const resetBaseConfigFn = createServerFn({ method: 'POST' }).handler(async () => {
+  await requireCapability(SystemCapabilities.MANAGE_CONFIGS);
+  const response = await apiFetch(`/api/admin/config/role/${BASE_CONFIG_PRINCIPAL_ID}`, {
+    method: 'DELETE',
+  });
+
+  if (!response.ok && response.status !== 404) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(
+      (err as { error?: string }).error ?? `Failed to reset base config: ${response.status}`,
+    );
+  }
+
+  return { success: true };
+});

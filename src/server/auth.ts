@@ -1,13 +1,13 @@
 import { z } from 'zod';
+import crypto from 'crypto';
 import { redirect } from '@tanstack/react-router';
 import { queryOptions } from '@tanstack/react-query';
-import { SystemRoles } from 'librechat-data-provider';
 import { createServerFn } from '@tanstack/react-start';
 import { getRequestHeader } from '@tanstack/react-start/server';
 import type * as t from '@/types';
 import { getAdminBasePath, getApiBaseUrl, getServerApiUrl } from './utils/url';
-import { buildOAuthExchangePayload } from './utils/oauth';
 import { refreshAdminTokenDeduped } from './utils/refresh';
+import { buildOAuthExchangePayload } from './utils/oauth';
 import { useAppSession, SESSION_CONFIG } from './session';
 
 /** Extract a named cookie value from `set-cookie` response headers. */
@@ -89,9 +89,6 @@ async function bootstrapAdminSessionFromLibreChatCookies(
 
   const verifyData = (await verifyResponse.json()) as { user?: t.SerializableUser };
   const user = verifyData.user ?? refreshData.user;
-  if (user.role !== SystemRoles.ADMIN) {
-    return undefined;
-  }
 
   const now = Date.now();
   await session.update({
@@ -151,10 +148,6 @@ export const adminLoginFn = createServerFn({ method: 'POST' })
         };
       }
 
-      if (loginData.user.role !== SystemRoles.ADMIN) {
-        return { error: true, message: 'You do not have admin privileges' };
-      }
-
       const now = Date.now();
       const session = await useAppSession();
       await session.update({
@@ -206,15 +199,26 @@ export const adminVerify2FAFn = createServerFn({ method: 'POST' })
       }
 
       const verifyData = responseData as t.TwoFAVerifyResponse;
+      const adminVerifyResponse = await fetch(`${getServerApiUrl()}/api/admin/verify`, {
+        headers: { Authorization: `Bearer ${verifyData.token}` },
+      });
 
-      if (verifyData.user.role !== SystemRoles.ADMIN) {
-        return { error: true, message: 'You do not have admin privileges' };
+      if (!adminVerifyResponse.ok) {
+        if (adminVerifyResponse.status === 403) {
+          return { error: true, message: 'You do not have admin privileges' };
+        }
+        if (adminVerifyResponse.status === 401) {
+          return { error: true, message: 'Session is no longer valid' };
+        }
+        return { error: true, message: '2FA verification failed' };
       }
+
+      const adminVerifyData = (await adminVerifyResponse.json()) as t.AdminVerifyResponse;
 
       const now = Date.now();
       const session = await useAppSession();
       await session.update({
-        user: verifyData.user,
+        user: adminVerifyData.user,
         token: verifyData.token,
         refreshToken: extractCookieValue(response, 'refreshToken'),
         tokenProvider: 'librechat',
@@ -222,7 +226,7 @@ export const adminVerify2FAFn = createServerFn({ method: 'POST' })
         lastActivity: now,
       });
 
-      return { error: false, user: verifyData.user };
+      return { error: false, user: adminVerifyData.user };
     } catch (error) {
       console.error('2FA verification error:', error);
       return { error: true, message: 'Verification failed. Please try again.' };
@@ -252,11 +256,6 @@ export const verifyAdminTokenFn = createServerFn({ method: 'GET' }).handler(asyn
         return { valid: true, user: bootstrappedUser };
       }
       return { valid: false, error: 'No session found' };
-    }
-
-    if (user.role !== SystemRoles.ADMIN) {
-      await clearSession(session);
-      return { valid: false, error: 'Not an admin user' };
     }
 
     const now = Date.now();
@@ -358,17 +357,24 @@ export const requireAuthFn = createServerFn({ method: 'GET' })
     };
   });
 
+const logoutResponseSchema = z.object({ redirect: z.string().optional() });
+
 export const adminLogoutFn = createServerFn({ method: 'POST' }).handler(async () => {
   try {
     const session = await useAppSession();
     const token = session.data.token;
 
+    let redirect: string | undefined;
     if (token) {
       try {
-        await fetch(`${getServerApiUrl()}/api/auth/logout`, {
+        const response = await fetch(`${getServerApiUrl()}/api/auth/logout`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
         });
+        const parsed = logoutResponseSchema.safeParse(await response.json().catch(() => ({})));
+        if (parsed.success) {
+          redirect = parsed.data.redirect;
+        }
       } catch {
         // Ignore remote logout errors
       }
@@ -376,7 +382,7 @@ export const adminLogoutFn = createServerFn({ method: 'POST' }).handler(async ()
 
     await clearSession(session);
 
-    return { error: false };
+    return { error: false, redirect };
   } catch (error) {
     console.error('Admin logout error:', error);
     return { error: true, message: 'Logout failed' };
@@ -384,11 +390,16 @@ export const adminLogoutFn = createServerFn({ method: 'POST' }).handler(async ()
 });
 
 export const getCurrentUserFn = createServerFn({ method: 'GET' }).handler(async () => {
-  const session = await useAppSession();
-  return {
-    user: session.data.user ?? null,
-    isAuthenticated: !!session.data.token,
-  };
+  try {
+    const session = await useAppSession();
+    return {
+      user: session.data.user ?? null,
+      isAuthenticated: !!session.data.token,
+    };
+  } catch (error) {
+    console.error('[getCurrentUserFn] Failed to read session, treating as logged out:', error);
+    return { user: null, isAuthenticated: false };
+  }
 });
 
 /** Shared queryOptions so consumers deduplicate the OpenID availability check. */
@@ -399,6 +410,9 @@ export const openIdCheckOptions = queryOptions({
 });
 
 export const checkOpenIdFn = createServerFn({ method: 'GET' }).handler(async () => {
+  if (process.env.ADMIN_SSO_ENABLED === 'false') {
+    return { available: false, ssoOnly: false };
+  }
   const checkUrl = `${getServerApiUrl()}/api/admin/oauth/openid/check`;
   try {
     const response = await fetch(checkUrl);
@@ -417,8 +431,15 @@ export const checkOpenIdFn = createServerFn({ method: 'GET' }).handler(async () 
 export const openidLoginFn = createServerFn({ method: 'GET' }).handler(async () => {
   try {
     const baseUrl = getApiBaseUrl();
-    const authUrl = new URL(`${baseUrl}/login`);
+    const authUrl = new URL(`${baseUrl}/api/admin/oauth/openid`);
+
+    const codeVerifier = crypto.randomBytes(32).toString('hex');
+    const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('hex');
+    authUrl.searchParams.set('code_challenge', codeChallenge);
     authUrl.searchParams.set('redirect_to', getAdminBasePath() || '/');
+
+    const session = await useAppSession();
+    await session.update({ codeVerifier });
 
     return { error: false, authUrl: authUrl.toString() };
   } catch (error) {

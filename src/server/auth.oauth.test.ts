@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MISSING_PKCE_VERIFIER_MESSAGE } from './utils/oauth';
 
 const fetchMock = vi.fn();
@@ -44,7 +44,13 @@ vi.mock('./utils/refresh', () => ({
   refreshAdminTokenDeduped: vi.fn(),
 }));
 
-import { oauthExchangeFn } from './auth';
+import {
+  adminLoginFn,
+  adminVerify2FAFn,
+  checkOpenIdFn,
+  oauthExchangeFn,
+  verifyAdminTokenFn,
+} from './auth';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -52,6 +58,143 @@ function jsonResponse(status: number, body: unknown): Response {
     headers: { 'Content-Type': 'application/json' },
   });
 }
+
+describe('adminLoginFn', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    updateSession.mockReset();
+    sessionState.data = {};
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  it('accepts a backend-approved delegated admin without requiring the ADMIN role', async () => {
+    const user = { id: 'user-1', role: 'department-admin', email: 'delegate@example.com' };
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { token: 'jwt-token', user }));
+
+    const result = await adminLoginFn({
+      data: { email: 'delegate@example.com', password: 'password' },
+    });
+
+    expect(result).toEqual({ error: false, user });
+    expect(fetchMock).toHaveBeenCalledWith('http://librechat.test/api/admin/login/local', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'delegate@example.com', password: 'password' }),
+    });
+    expect(updateSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        user,
+        token: 'jwt-token',
+        tokenProvider: 'librechat',
+      }),
+    );
+  });
+});
+
+describe('adminVerify2FAFn', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    updateSession.mockReset();
+    sessionState.data = {};
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  it('accepts a backend-approved delegated admin after 2FA verification', async () => {
+    const user = { id: 'user-2', role: 'department-admin', email: 'delegate2@example.com' };
+    const verifiedUser = { ...user, name: 'Delegated Admin' };
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { token: 'jwt-token-2', user }))
+      .mockResolvedValueOnce(jsonResponse(200, { user: verifiedUser }));
+
+    const result = await adminVerify2FAFn({
+      data: { tempToken: 'temp-token', totpCode: '123456' },
+    });
+
+    expect(result).toEqual({ error: false, user: verifiedUser });
+    expect(fetchMock).toHaveBeenCalledWith('http://librechat.test/api/auth/2fa/verify-temp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: 'temp-token', token: '123456' }),
+    });
+    expect(fetchMock).toHaveBeenCalledWith('http://librechat.test/api/admin/verify', {
+      headers: { Authorization: 'Bearer jwt-token-2' },
+    });
+    expect(updateSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        user: verifiedUser,
+        token: 'jwt-token-2',
+        tokenProvider: 'librechat',
+      }),
+    );
+  });
+
+  it('rejects a 2FA token that does not pass admin capability revalidation', async () => {
+    const user = { id: 'user-2', role: 'regular-user', email: 'user@example.com' };
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { token: 'user-jwt-token', user }))
+      .mockResolvedValueOnce(jsonResponse(403, {}));
+
+    const result = await adminVerify2FAFn({
+      data: { tempToken: 'temp-token', totpCode: '123456' },
+    });
+
+    expect(result).toEqual({ error: true, message: 'You do not have admin privileges' });
+    expect(fetchMock).toHaveBeenCalledWith('http://librechat.test/api/admin/verify', {
+      headers: { Authorization: 'Bearer user-jwt-token' },
+    });
+    expect(updateSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('verifyAdminTokenFn', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    updateSession.mockReset();
+    sessionState.data = {};
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  it('keeps a fresh delegated admin session without requiring the ADMIN role', async () => {
+    const user = { id: 'user-3', role: 'department-admin', email: 'delegate3@example.com' };
+    sessionState.data = {
+      user,
+      token: 'jwt-token-3',
+      lastVerified: Date.now(),
+      lastActivity: Date.now(),
+    };
+
+    const result = await verifyAdminTokenFn();
+
+    expect(result).toEqual({ valid: true, user });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(updateSession).toHaveBeenCalledWith({ lastActivity: expect.any(Number) });
+  });
+
+  it('clears a delegated admin session when backend capability revalidation is denied', async () => {
+    const user = { id: 'user-4', role: 'department-admin', email: 'delegate4@example.com' };
+    sessionState.data = {
+      user,
+      token: 'jwt-token-4',
+      lastVerified: 0,
+      lastActivity: Date.now(),
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(403, {}));
+
+    const result = await verifyAdminTokenFn();
+
+    expect(result).toEqual({ valid: false, error: 'Admin privileges have been revoked' });
+    expect(fetchMock).toHaveBeenCalledWith('http://librechat.test/api/admin/verify', {
+      headers: { Authorization: 'Bearer jwt-token-4' },
+    });
+    expect(updateSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token: undefined,
+        user: undefined,
+        refreshToken: undefined,
+      }),
+    );
+  });
+});
 
 describe('oauthExchangeFn', () => {
   beforeEach(() => {
@@ -114,5 +257,70 @@ describe('oauthExchangeFn', () => {
     expect(warnSpy).toHaveBeenCalledWith(
       '[oauthExchangeFn] Missing PKCE verifier from admin session; check SESSION_COOKIE_SECURE for HTTP deployments',
     );
+  });
+});
+
+describe('checkOpenIdFn', () => {
+  const originalSsoEnabled = process.env.ADMIN_SSO_ENABLED;
+  const originalSsoOnly = process.env.ADMIN_SSO_ONLY;
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    warnSpy.mockClear();
+    vi.stubGlobal('fetch', fetchMock);
+    delete process.env.ADMIN_SSO_ENABLED;
+    delete process.env.ADMIN_SSO_ONLY;
+  });
+
+  afterEach(() => {
+    if (originalSsoEnabled === undefined) delete process.env.ADMIN_SSO_ENABLED;
+    else process.env.ADMIN_SSO_ENABLED = originalSsoEnabled;
+    if (originalSsoOnly === undefined) delete process.env.ADMIN_SSO_ONLY;
+    else process.env.ADMIN_SSO_ONLY = originalSsoOnly;
+  });
+
+  it('reports SSO available with auto-redirect off by default', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, {}));
+
+    const result = await checkOpenIdFn();
+
+    expect(result).toEqual({ available: true, ssoOnly: false });
+    expect(fetchMock).toHaveBeenCalledWith('http://librechat.test/api/admin/oauth/openid/check');
+  });
+
+  it('marks the session SSO-only when ADMIN_SSO_ONLY=true', async () => {
+    process.env.ADMIN_SSO_ONLY = 'true';
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, {}));
+
+    const result = await checkOpenIdFn();
+
+    expect(result).toEqual({ available: true, ssoOnly: true });
+  });
+
+  it('hides the SSO button without calling the backend when ADMIN_SSO_ENABLED=false', async () => {
+    process.env.ADMIN_SSO_ENABLED = 'false';
+
+    const result = await checkOpenIdFn();
+
+    expect(result).toEqual({ available: false, ssoOnly: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('lets ADMIN_SSO_ENABLED=false take precedence over ADMIN_SSO_ONLY=true', async () => {
+    process.env.ADMIN_SSO_ENABLED = 'false';
+    process.env.ADMIN_SSO_ONLY = 'true';
+
+    const result = await checkOpenIdFn();
+
+    expect(result).toEqual({ available: false, ssoOnly: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports SSO unavailable when the backend check fails', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, {}));
+
+    const result = await checkOpenIdFn();
+
+    expect(result).toEqual({ available: false, ssoOnly: false });
   });
 });

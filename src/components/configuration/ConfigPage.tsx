@@ -7,35 +7,39 @@ import { queryOptions, useQuery, useQueryClient, useMutation } from '@tanstack/r
 import type * as t from '@/types';
 import {
   removeFieldProfileValueFn,
+  tombstoneFieldProfileValueFn,
   bulkSaveProfileValuesFn,
   getBatchFieldProfilesFn,
   availableScopesOptions,
   resetBaseConfigFieldFn,
   getResolvedConfigFn,
   importBaseConfigFn,
+  resetBaseConfigFn,
   baseConfigOptions,
   saveBaseConfigFn,
 } from '@/server';
 import {
   flattenObject,
   unflattenObject,
-  serializeKVPairs,
   deepSerializeKVPairs,
-  cn,
   normalizeImportConfig,
   hasConfigCapability,
   getTabsWithPermission,
+  notifySuccess,
+  notifyError,
 } from '@/utils';
 import { useLocalize, useHighlightRef, useActiveSection, useCapabilities } from '@/hooks';
 import { CONFIG_TABS, OTHER_TAB, SECTION_META, HIDDEN_SECTIONS } from './configMeta';
+import { applyConfigEdit, mergeIndexedArrayEdits, partitionScopeResetPaths } from './utils';
+import { validateMcpCrossField } from './sections/McpServersRenderer';
 import { ScopeSelector, ScopeTriggerButton } from './ScopeSelector';
-import { ConfigTableOfContents } from './ConfigTableOfContents';
-import { ConfirmSaveDialog } from './ConfirmSaveDialog';
 import { StickyActionBar } from '@/components/shared';
+import { ConfigTableOfContents } from './ConfigTableOfContents';
+import { ResetBaseConfigDialog } from './ResetBaseConfigDialog';
+import { ConfirmSaveDialog } from './ConfirmSaveDialog';
 import { ConfigTabContent } from './ConfigTabContent';
 import { ImportYamlDialog } from './ImportYamlDialog';
 import { ContentToolbar } from './ContentToolbar';
-import { mergeIndexedArrayEdits } from './utils';
 import { SystemCapabilities } from '@/constants';
 import { ConfigTabBar } from './ConfigTabBar';
 import { InfoBanner } from './InfoBanner';
@@ -130,6 +134,15 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
     return new Set(Object.keys(flattenObject(dbOverrides)));
   }, [dbOverrides]);
 
+  const baseRecordKeys = useMemo(() => {
+    const result: Record<string, Set<string>> = {};
+    const yamlMcpKeys = baseConfigData?.yamlMcpKeys;
+    if (yamlMcpKeys && Array.isArray(yamlMcpKeys)) {
+      result.mcpServers = new Set(yamlMcpKeys);
+    }
+    return result;
+  }, [baseConfigData]);
+
   const hasUnmappedSections = useMemo(
     () =>
       schemaTree.some(
@@ -181,18 +194,6 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
   const [importSuccess, setImportSuccess] = useState(false);
   const dismissTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(dismissTimer.current), []);
-
-  const [toast, setToast] = useState<t.ToastState>(null);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(toastTimer.current), []);
-
-  const showToast = useCallback((state: t.ToastState, autoHideMs?: number) => {
-    setToast(state);
-    clearTimeout(toastTimer.current);
-    if (autoHideMs) {
-      toastTimer.current = setTimeout(() => setToast(null), autoHideMs);
-    }
-  }, []);
 
   const [showConfiguredOnly, setShowConfiguredOnly] = useState(false);
 
@@ -344,41 +345,56 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
     return scopeResolvedValues ?? {};
   }, [isEditingScope, flatBaseline, scopeResolvedValues]);
 
+  /** Container paths inferred from leaf baselines, used to tell apart subtree-deletes from no-op writes. */
+  const baselineIntermediates = useMemo(() => {
+    const set = new Set<string>();
+    for (const leaf of Object.keys(scopeBaseline)) {
+      const parts = leaf.split('.');
+      for (let i = 1; i < parts.length; i++) {
+        set.add(parts.slice(0, i).join('.'));
+      }
+    }
+    return set;
+  }, [scopeBaseline]);
+
+  /** Container paths walked directly off the structured config, so an orphaned `{}` entry whose flatten dropped (or never produced) any leaf is still recognized as a real subtree-delete target. */
+  const baselineContainerPaths = useMemo(() => {
+    const set = new Set<string>();
+    const walk = (obj: unknown, prefix: string): void => {
+      if (obj == null || typeof obj !== 'object' || Array.isArray(obj)) return;
+      for (const k of Object.keys(obj as Record<string, unknown>)) {
+        const path = prefix ? `${prefix}.${k}` : k;
+        const v = (obj as Record<string, unknown>)[k];
+        if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+          set.add(path);
+          walk(v, path);
+        }
+      }
+    };
+    walk(baseActiveConfigValues, '');
+    return set;
+  }, [baseActiveConfigValues]);
+
   const handleFieldChange = useCallback(
     (path: string, value: t.ConfigValue) => {
-      startTransition(() => {
-        setTouchedPaths((prev) => {
-          if (prev.has(path)) return prev;
-          const next = new Set(prev);
-          next.add(path);
-          return next;
-        });
-        setEditedValues((prev) => {
-          const baseline = scopeBaseline[path];
-          const match =
-            value === baseline ||
-            (typeof value === 'object' &&
-              typeof baseline === 'object' &&
-              JSON.stringify(value) === JSON.stringify(baseline));
-          if (match) {
-            const next = { ...prev };
-            delete next[path];
-            return next;
-          }
-          const next = { ...prev, [path]: value };
-          if (Array.isArray(value)) {
-            const prefix = `${path}.`;
-            for (const k of Object.keys(next)) {
-              if (k.startsWith(prefix) && /\.\d+$/.test(k)) delete next[k];
-            }
-          }
-          const indexMatch = /^(.+)\.\d+$/.exec(path);
-          if (indexMatch) delete next[indexMatch[1]];
-          return next;
-        });
+      setTouchedPaths((prev) => {
+        if (prev.has(path)) return prev;
+        const next = new Set(prev);
+        next.add(path);
+        return next;
+      });
+      setEditedValues((prev) => {
+        return applyConfigEdit(
+          prev,
+          path,
+          value,
+          scopeBaseline,
+          baselineIntermediates,
+          baselineContainerPaths,
+        );
       });
     },
-    [scopeBaseline],
+    [scopeBaseline, baselineIntermediates, baselineContainerPaths],
   );
 
   const isDirty = Object.keys(editedValues).length > 0;
@@ -414,8 +430,8 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
     setConfirmSaveOpen(false);
     setSaving(false);
     setSaveError(null);
-    showToast({ type: 'saved' }, 3000);
-  }, [showToast]);
+    notifySuccess(localize('com_config_saved'));
+  }, [localize]);
 
   const invalidateAndResetBase = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['baseConfig'] });
@@ -431,10 +447,40 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
 
   const importMutation = useMutation({
     mutationFn: (config: Record<string, t.ConfigValue>) => importBaseConfigFn({ data: { config } }),
-    onMutate: () => showToast({ type: 'saving' }),
-    onError: (err: Error) => showToast({ type: 'error', message: err.message }, 5000),
+    onError: (err: Error) => notifyError(err.message),
     onSuccess: invalidateAndResetBase,
   });
+
+  const [resetBaseOpen, setResetBaseOpen] = useState(false);
+  const [resettingBase, setResettingBase] = useState(false);
+  const [resetBaseError, setResetBaseError] = useState<string | null>(null);
+
+  const handleResetBaseConfig = useCallback(async () => {
+    if (resettingBase) return;
+    setResettingBase(true);
+    setResetBaseError(null);
+    try {
+      await resetBaseConfigFn();
+      /** resolvedConfig holds each scope's own overrides (not a base merge), so a
+       *  base reset doesn't make it stale on its own — but base-derived data
+       *  (schemaDefaults, base values used for MCP inheritance) feeds scope mode,
+       *  so flush it too, consistent with how scope saves invalidate. */
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['baseConfig'] }),
+        queryClient.invalidateQueries({ queryKey: ['resolvedConfig'] }),
+      ]);
+      setEditedValues({});
+      setTouchedPaths(new Set());
+      setResettingBase(false);
+      setResetBaseOpen(false);
+      notifySuccess(localize('com_config_reset_base_success'));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setResettingBase(false);
+      setResetBaseError(message);
+      notifyError(message);
+    }
+  }, [resettingBase, queryClient, localize]);
 
   const handleResetField = useCallback((fieldPath: string) => {
     startTransition(() => {
@@ -453,54 +499,106 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
     const touched = [...touchedPaths].filter((p) => p in editedValues);
     if (touched.length === 0) return;
 
+    /** Per-leaf saves can land an MCP entry in a transport state whose required siblings are missing (e.g. type=stdio with no command/args). Server-side per-field validation only sees one path at a time, so do the cross-field check here against the merged effective entry before any PATCH fires. Use baseActiveConfigValues so scope-mode edits validate against the scope-resolved baseline (where prior scope overrides supply some required fields) instead of the base config alone. */
+    const mcpBaseline = (() => {
+      const v = baseActiveConfigValues?.mcpServers;
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        return v as Record<string, t.ConfigValue>;
+      }
+      return {};
+    })();
+    const mcpEdits: Array<[string, t.ConfigValue]> = touched
+      .filter((p) => p.startsWith('mcpServers.'))
+      .map((p) => [p, editedValues[p]] as [string, t.ConfigValue]);
+    /** A leaf reset (undefined write) removes the override and reveals the value of the next-lower layer. In scope mode that next layer is the base config; in base mode it is the un-merged YAML config (the baseOnly response). Feed whichever layer applies as the resetFallback so the cross-field validator does not falsely flag a reset-but-still-valid field as missing. */
+    const mcpResetFallback = (() => {
+      const source = isEditingScope ? configValues?.mcpServers : baseConfigData?.yamlMcpServers;
+      if (source && typeof source === 'object' && !Array.isArray(source)) {
+        return source as Record<string, t.ConfigValue>;
+      }
+      return undefined;
+    })();
+    if (mcpEdits.length > 0) {
+      const mcpErrors = validateMcpCrossField(mcpBaseline, mcpEdits, mcpResetFallback);
+      if (mcpErrors.length > 0) {
+        const { entryKey, missingField } = mcpErrors[0];
+        const message = localize('com_config_mcp_invalid_after_edit', {
+          entry: entryKey,
+          field: missingField,
+        });
+        setSaveError(message);
+        notifyError(message);
+        return;
+      }
+    }
+
     const saves = touched
       .filter((p) => editedValues[p] !== undefined)
       .map((p) => ({
         fieldPath: p,
-        value: /\.\d+$/.test(p) ? deepSerializeKVPairs(editedValues[p]) : serializeKVPairs(editedValues[p]),
+        value: deepSerializeKVPairs(editedValues[p]),
       }));
     const resets = touched.filter((p) => editedValues[p] === undefined);
+    const inheritedMcpKeys = (() => {
+      const source = isEditingScope ? configValues?.mcpServers : undefined;
+      if (source && typeof source === 'object' && !Array.isArray(source)) {
+        return new Set(Object.keys(source as Record<string, t.ConfigValue>));
+      }
+      return new Set<string>();
+    })();
 
     setSaving(true);
     setSaveError(null);
-    showToast({ type: 'saving' });
 
     try {
-      const promises: Promise<unknown>[] = [];
+      /** Resets must land before saves so a delete-then-recreate at the same path (e.g. MCP entry replaced with different fields) wipes stale fields first and the new leaf PATCHes don't race against the DELETE. */
+      if (resets.length > 0) {
+        const resetPromises = isEditingScope
+          ? (() => {
+              const { resetPaths, tombstonePaths } = partitionScopeResetPaths(
+                resets,
+                inheritedMcpKeys,
+              );
+              return [
+                ...resetPaths.map((fieldPath) =>
+                  removeFieldProfileValueFn({
+                    data: {
+                      fieldPath,
+                      principalType: editingScope!.principalType,
+                      principalId: editingScope!.principalId,
+                    },
+                  }),
+                ),
+                ...tombstonePaths.map((fieldPath) =>
+                  tombstoneFieldProfileValueFn({
+                    data: {
+                      fieldPath,
+                      principalType: editingScope!.principalType,
+                      principalId: editingScope!.principalId,
+                    },
+                  }),
+                ),
+              ];
+            })()
+          : resets.map((fieldPath) => resetBaseConfigFieldFn({ data: { fieldPath } }));
+        if (resetPromises.length > 0) {
+          await Promise.all(resetPromises);
+        }
+      }
 
       if (saves.length > 0) {
         if (isEditingScope) {
-          promises.push(
-            bulkSaveProfileValuesFn({
-              data: {
-                principalType: editingScope!.principalType,
-                principalId: editingScope!.principalId,
-                entries: saves,
-              },
-            }),
-          );
+          await bulkSaveProfileValuesFn({
+            data: {
+              principalType: editingScope!.principalType,
+              principalId: editingScope!.principalId,
+              entries: saves,
+            },
+          });
         } else {
-          promises.push(saveBaseConfigFn({ data: { entries: saves } }));
+          await saveBaseConfigFn({ data: { entries: saves } });
         }
       }
-
-      for (const fieldPath of resets) {
-        if (isEditingScope) {
-          promises.push(
-            removeFieldProfileValueFn({
-              data: {
-                fieldPath,
-                principalType: editingScope!.principalType,
-                principalId: editingScope!.principalId,
-              },
-            }),
-          );
-        } else {
-          promises.push(resetBaseConfigFieldFn({ data: { fieldPath } }));
-        }
-      }
-
-      await Promise.all(promises);
 
       if (isEditingScope) {
         invalidateAndResetScope();
@@ -511,23 +609,26 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
       const message = err instanceof Error ? err.message : String(err);
       setSaving(false);
       setSaveError(message);
-      showToast({ type: 'error', message }, 5000);
+      notifyError(message);
     }
   }, [
     touchedPaths,
     editedValues,
-    isEditingScope,
-    editingScope,
-    showToast,
-    invalidateAndResetBase,
-    invalidateAndResetScope,
     saving,
+    isEditingScope,
+    baseActiveConfigValues,
+    configValues,
+    baseConfigData,
+    localize,
+    editingScope,
+    invalidateAndResetScope,
+    invalidateAndResetBase,
   ]);
 
   const serializedEditedValues = useMemo(() => {
     const result: t.FlatConfigMap = {};
     for (const [k, v] of Object.entries(editedValues)) {
-      result[k] = /\.\d+$/.test(k) ? deepSerializeKVPairs(v) : serializeKVPairs(v);
+      result[k] = deepSerializeKVPairs(v);
     }
     return result;
   }, [editedValues]);
@@ -540,7 +641,10 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
       const segments = path.split('.');
       let current: t.ConfigValue = configValues;
       for (const seg of segments) {
-        if (current == null || typeof current !== 'object') { current = undefined; break; }
+        if (current == null || typeof current !== 'object') {
+          current = undefined;
+          break;
+        }
         current = Array.isArray(current)
           ? (current as t.ConfigValue[])[Number(seg)]
           : (current as Record<string, t.ConfigValue>)[seg];
@@ -593,7 +697,7 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
       const normalized = normalizeImportConfig(appConfig);
       if (isEditingScope && editingScope) {
         handleImportAsProfile(normalized, editingScope).catch((err: Error) => {
-          showToast({ type: 'error', message: err.message }, 5000);
+          notifyError(err.message);
         });
       } else {
         importMutation.mutate(normalized, { onSuccess: () => showImportSuccess() });
@@ -764,6 +868,14 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
 
   const banner = renderBanner();
 
+  const resetBaseTitle = (() => {
+    if (!canManageConfig) {
+      return localize('com_cap_no_permission', { cap: SystemCapabilities.MANAGE_CONFIGS });
+    }
+    if (isDirty) return localize('com_config_reset_base_dirty');
+    return undefined;
+  })();
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden pt-2">
       <div className="shrink-0 px-4">
@@ -777,6 +889,13 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
               : undefined
           }
           onImportClick={() => setImportOpen(true)}
+          showReset={!isEditingScope && dbOverridePaths.size > 0}
+          resetDisabled={isDirty || !canManageConfig}
+          resetTitle={resetBaseTitle}
+          onResetClick={() => {
+            setResetBaseError(null);
+            setResetBaseOpen(true);
+          }}
           showScope={permissions.canView}
           scopeSelection={selectedScope}
           onScopeClick={() => setScopeSelectorOpen(true)}
@@ -802,7 +921,7 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
             </div>
           )}
           <div
-            className="h-full overflow-auto pl-4 [scrollbar-gutter:stable]"
+            className="h-full scrollbar-gutter-stable overflow-auto pl-4"
             ref={scrollCallbackRef}
           >
             <ConfigTabContent
@@ -827,6 +946,9 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
               sectionPermissions={sectionPermissions}
               schemaDefaults={schemaDefaults}
               showConfiguredOnly={showConfiguredOnly}
+              isEditingScope={isEditingScope}
+              baseRecordKeys={baseRecordKeys}
+              onValidationError={(message) => notifyError(message)}
             />
           </div>
         </div>
@@ -850,38 +972,6 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
         />
       )}
 
-      {toast &&
-        createPortal(
-          <div
-            className={cn(
-              'config-toast',
-              toast.type === 'saving' && 'config-toast-info',
-              toast.type === 'saved' && 'config-toast-success',
-              toast.type === 'error' && 'config-toast-error',
-            )}
-          >
-            {toast.type === 'saving' && (
-              <>
-                <span className="config-toast-spinner" />
-                {localize('com_config_saving')}
-              </>
-            )}
-            {toast.type === 'saved' && (
-              <>
-                <Icon name="check" size="sm" />
-                {localize('com_config_saved')}
-              </>
-            )}
-            {toast.type === 'error' && (
-              <>
-                <Icon name="warning" size="sm" />
-                {toast.message}
-              </>
-            )}
-          </div>,
-          document.body,
-        )}
-
       <ConfirmSaveDialog
         open={confirmSaveOpen}
         editedValues={serializedEditedValues}
@@ -898,7 +988,7 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
         currentSelection={selectedScope}
         onSelect={handleScopeChange}
         permissions={permissions}
-        onError={(msg) => showToast({ type: 'error', message: msg }, 5000)}
+        onError={(msg) => notifyError(msg)}
       />
 
       <ImportYamlDialog
@@ -906,6 +996,18 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
         onClose={() => setImportOpen(false)}
         onImport={handleImport}
         onImportAsProfile={handleImportAsProfile}
+      />
+
+      <ResetBaseConfigDialog
+        open={resetBaseOpen}
+        resetting={resettingBase}
+        error={resetBaseError}
+        onConfirm={handleResetBaseConfig}
+        onCancel={() => {
+          if (resettingBase) return;
+          setResetBaseOpen(false);
+          setResetBaseError(null);
+        }}
       />
     </div>
   );
@@ -916,6 +1018,10 @@ function HeaderActions({
   importDisabled,
   importTitle,
   onImportClick,
+  showReset,
+  resetDisabled,
+  resetTitle,
+  onResetClick,
   showScope,
   scopeSelection,
   onScopeClick,
@@ -924,6 +1030,10 @@ function HeaderActions({
   importDisabled: boolean;
   importTitle?: string;
   onImportClick: () => void;
+  showReset: boolean;
+  resetDisabled: boolean;
+  resetTitle?: string;
+  onResetClick: () => void;
   showScope: boolean;
   scopeSelection: t.ScopeSelection;
   onScopeClick: () => void;
@@ -950,6 +1060,21 @@ function HeaderActions({
             <Icon name="upload" size="xs" />
           </span>
           {localize('com_config_import_yaml')}
+        </button>
+      )}
+      {showReset && (
+        <button
+          type="button"
+          onClick={onResetClick}
+          disabled={resetDisabled}
+          aria-disabled={resetDisabled || undefined}
+          title={resetTitle}
+          className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-(--cui-color-stroke-default) bg-transparent px-3 py-1.5 text-sm text-(--cui-color-text-default) transition-colors hover:border-(--cui-color-accent-danger) hover:text-(--cui-color-accent-danger) disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-(--cui-color-stroke-default) disabled:hover:text-(--cui-color-text-default)"
+        >
+          <span aria-hidden="true">
+            <Icon name="refresh" size="xs" />
+          </span>
+          {localize('com_config_reset_base')}
         </button>
       )}
       {showScope && <ScopeTriggerButton currentSelection={scopeSelection} onClick={onScopeClick} />}

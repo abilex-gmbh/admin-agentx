@@ -7,6 +7,10 @@ on:
         description: Optional image tag to publish, for example v0.1.0
         required: false
         type: string
+  release:
+    types: [published]
+  release:
+    types: [published]
   push:
     branches:
       - main
@@ -66,6 +70,9 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
             type=ref,event=tag
             type=raw,value=${{ inputs.image_tag }},enable=${{ github.event_name == 'workflow_dispatch' && inputs.image_tag != '' }}
             type=sha,format=short
@@ -80,7 +87,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           target: runtime
           build-args: |
             ADMIN_BASE_PATH=/admin

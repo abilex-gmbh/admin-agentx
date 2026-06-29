@@ -47,6 +47,7 @@ export const PERMISSION_TYPE_SCHEMA: Record<AdminPermissionType, Permissions[]> 
     Permissions.CREATE,
     Permissions.SHARE,
     Permissions.SHARE_PUBLIC,
+    Permissions.CONFIGURE_OBO,
   ],
   [PermissionTypes.REMOTE_AGENTS]: [
     Permissions.USE,
@@ -66,6 +67,7 @@ export const PERMISSION_TYPE_SCHEMA: Record<AdminPermissionType, Permissions[]> 
     'REVIEW' as Permissions,
     'DELETE' as Permissions,
   ],
+  [PermissionTypes.SHARED_LINKS]: [Permissions.CREATE, Permissions.SHARE, Permissions.SHARE_PUBLIC],
 };
 
 export function defaultPermissions(): t.RolePermissions {

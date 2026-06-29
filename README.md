@@ -46,9 +46,11 @@ docker compose down     # stop
 | `PORT`                          | No                                  | `3000`                                                                           | Port the admin panel listens on                                                                 |
 | `SESSION_SECRET`                | **Yes** (always required in Docker) | Dev fallback only when running `bun dev` locally; no default in the Docker image | Encryption key for sessions (min 32 chars)                                                      |
 | `VITE_API_BASE_URL`             | **Yes** (Docker)                    | `http://localhost:3080` (local dev only)                                         | LibreChat API server URL; use `http://host.docker.internal:<port>` in Docker                    |
+| `VITE_BASE_PATH`                | No                                  | `/`                                                                              | URL subpath to serve the panel under (e.g., `/adminpanel`). Must match at build time and runtime |
 | `API_SERVER_URL`                | No                                  | Falls back to `VITE_API_BASE_URL`                                                | Server-side LibreChat API URL when the container reaches LibreChat differently than the browser |
 | `ADMIN_BASE_PATH`               | No                                  | `/`                                                                              | URL path where the admin panel is mounted; use `/admin` for shared-host deployments             |
 | `ADMIN_SSO_ONLY`                | No                                  | `false`                                                                          | Hide email/password form, SSO only                                                              |
+| `ADMIN_SSO_ENABLED`             | No                                  | `true`                                                                           | Set `false` to hide the SSO button (and auto-redirect) while keeping email/password login       |
 | `ADMIN_SESSION_IDLE_TIMEOUT_MS` | No                                  | `1800000` (30 min)                                                               | Session idle timeout in ms                                                                      |
 | `SESSION_COOKIE_SECURE`         | No                                  | `true` in production, `false` otherwise                                          | Set `false` only for plain-HTTP deployments so the browser keeps the admin session cookie       |
 
@@ -70,6 +72,19 @@ docker run -p 3000:3000 \
   -e VITE_API_BASE_URL=http://host.docker.internal:3080 \
   -e ADMIN_BASE_PATH=/admin \
   -e SESSION_COOKIE_SECURE=false \
+  admin-agentx
+```
+
+To serve the same image under another subpath, change the build arg and runtime
+environment together:
+
+```bash
+docker build --build-arg ADMIN_BASE_PATH=/adminpanel -t admin-agentx .
+docker run -p 3000:3000 \
+  --add-host=host.docker.internal:host-gateway \
+  -e SESSION_SECRET=your-secret-here-at-least-32-characters \
+  -e VITE_API_BASE_URL=http://host.docker.internal:3080 \
+  -e ADMIN_BASE_PATH=/adminpanel \
   admin-agentx
 ```
 
