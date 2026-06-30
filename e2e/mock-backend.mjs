@@ -19,6 +19,30 @@ function parseBody(req) {
 }
 
 const VALID_TEMP_TOKEN = 'valid-2fa-temp-token-for-testing';
+const BASE_CONFIG_ID = '__base__';
+
+const baseConfig = {
+  interface: {
+    prompts: true,
+  },
+  modelSpecs: {
+    enforce: false,
+    prioritize: true,
+    addedEndpoints: ['agents'],
+    list: [
+      {
+        name: 'auto-router',
+        label: 'Auto Router',
+        description:
+          'Nicht sicher, was du wählen sollst?Auto Router wählt das beste Modell für deine Anfrage',
+        conversation_starters: [
+          'Gib mir drei verschiedene Möglichkeiten, dieses Problem anzugehen:',
+          'Verwandle diese Notizen in einen strukturierten Plan:',
+        ],
+      },
+    ],
+  },
+};
 
 const handlers = {
   'POST /api/admin/login/local': (body) => {
@@ -80,6 +104,39 @@ const handlers = {
     200,
     { message: 'OpenID check successful' },
   ],
+  'GET /api/admin/grants/effective': () => [
+    200,
+    {
+      capabilities: [
+        'access:admin',
+        'read:configs',
+        'manage:configs',
+        'assign:configs',
+        'read:roles',
+        'read:groups',
+      ],
+    },
+  ],
+  'GET /api/admin/config/base': () => [
+    200,
+    {
+      config: baseConfig,
+    },
+  ],
+  'GET /api/admin/config/role/__base__': () => [
+    200,
+    {
+      config: {
+        _id: 'cfg-base',
+        principalType: 'role',
+        principalId: BASE_CONFIG_ID,
+        priority: 0,
+        isActive: true,
+        overrides: {},
+      },
+    },
+  ],
+  'GET /api/admin/config': () => [500, { error: 'Mock config listing failure' }],
 };
 
 const server = createServer(async (req, res) => {

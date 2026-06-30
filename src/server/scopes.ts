@@ -192,27 +192,34 @@ export const fieldProfileValuesOptions = (fieldPath: string) =>
 export const getBatchFieldProfilesFn = createServerFn({ method: 'POST' })
   .inputValidator(z.object({ paths: z.array(z.string()) }))
   .handler(async ({ data }: { data: { paths: string[] } }) => {
-    const response = await apiFetch('/api/admin/config');
-    if (!response.ok) {
-      const message = await readApiErrorMessage(response, 'Failed to fetch configs');
-      return { profileMap: {}, error: message };
-    }
-    const { configs } = (await response.json()) as AdminConfigListResponse;
+    try {
+      const response = await apiFetch('/api/admin/config');
+      if (!response.ok) {
+        const message = await readApiErrorMessage(response, 'Failed to fetch configs');
+        return { profileMap: {}, error: message };
+      }
+      const { configs } = (await response.json()) as AdminConfigListResponse;
 
-    const map: Record<string, string[]> = {};
-    for (const path of data.paths) {
-      const principalTypes: string[] = [];
-      for (const config of configs) {
-        if (config.principalId === BASE_CONFIG_PRINCIPAL_ID) continue;
-        if (deepGet(config.overrides, path) !== undefined) {
-          principalTypes.push(config.principalType);
+      const map: Record<string, string[]> = {};
+      for (const path of data.paths) {
+        const principalTypes: string[] = [];
+        for (const config of configs) {
+          if (config.principalId === BASE_CONFIG_PRINCIPAL_ID) continue;
+          if (deepGet(config.overrides, path) !== undefined) {
+            principalTypes.push(config.principalType);
+          }
+        }
+        if (principalTypes.length > 0) {
+          map[path] = principalTypes;
         }
       }
-      if (principalTypes.length > 0) {
-        map[path] = principalTypes;
-      }
+      return { profileMap: map };
+    } catch (error) {
+      return {
+        profileMap: {},
+        error: error instanceof Error ? error.message : 'Failed to fetch configs',
+      };
     }
-    return { profileMap: map };
   });
 
 /**
