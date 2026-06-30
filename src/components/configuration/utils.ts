@@ -118,6 +118,19 @@ export function getEnumOptions(typeString: string): t.SelectOption[] {
   return [];
 }
 
+export function getFieldSelectOptions(
+  field: t.SchemaField,
+  fieldPath?: string,
+): t.SelectOption[] {
+  const options = getEnumOptions(field.type);
+
+  if (fieldPath === 'webSearch.scraperProvider' && !options.some((option) => option.value === 'none')) {
+    return [...options, { label: 'None', value: 'none' }];
+  }
+
+  return options;
+}
+
 /** Coerces a select value to its runtime type. Numeric enum values arrive as
  *  strings from the HTML select element but the Zod schema expects numbers. */
 export function coerceEnumValue(value: string): string | number {

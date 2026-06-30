@@ -32,6 +32,118 @@ const WRAPPER_TYPES = new Set([
 
 const INDEXED_ARRAY_RE = /^(.+)\.(\d+)$/;
 const ARRAY_INDEX_KEY_RE = /^(0|[1-9]\d*)$/;
+const WEBSEARCH_SCRAPER_PROVIDER_PATH = 'webSearch.scraperProvider';
+const MODEL_SPEC_STARTERS_PATH_RE = /^modelSpecs\.list(?:\.\d+)?\.conversation_starters$/;
+const MODEL_SPEC_LIST_PATH = 'modelSpecs.list';
+
+function cloneConfigValue<T>(value: T): T {
+  if (typeof globalThis.structuredClone === 'function') {
+    return globalThis.structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function makeSyntheticStringArrayField(path: string, key: string, depth: number): t.SchemaField {
+  return {
+    path,
+    key,
+    type: 'array<string>',
+    isOptional: true,
+    isNullable: false,
+    isArray: true,
+    isObject: false,
+    depth,
+  };
+}
+
+function injectCompatSchemaFields(fields: t.SchemaField[]): t.SchemaField[] {
+  return fields.map((field) => {
+    const nextField: t.SchemaField = {
+      ...field,
+      children: field.children ? injectCompatSchemaFields(field.children) : field.children,
+    };
+
+    if (nextField.path !== MODEL_SPEC_LIST_PATH || !nextField.children) {
+      return nextField;
+    }
+
+    const hasConversationStarters = nextField.children.some(
+      (child) => child.key === 'conversation_starters',
+    );
+
+    if (hasConversationStarters) {
+      return nextField;
+    }
+
+    return {
+      ...nextField,
+      children: [
+        ...nextField.children,
+        makeSyntheticStringArrayField(
+          `${MODEL_SPEC_LIST_PATH}.[].conversation_starters`,
+          'conversation_starters',
+          nextField.depth + 1,
+        ),
+      ],
+    };
+  });
+}
+
+export function buildCompatSchemaTree(schema: t.ZodSchemaLike): t.SchemaField[] {
+  return injectCompatSchemaFields(extractSchemaTree(schema));
+}
+
+export function normalizeImportedYamlForValidation(rawConfig: unknown): unknown {
+  const normalized = cloneConfigValue(rawConfig);
+
+  if (!normalized || typeof normalized !== 'object') {
+    return normalized;
+  }
+
+  const config = normalized as Record<string, unknown>;
+  const webSearch =
+    config.webSearch && typeof config.webSearch === 'object' && !Array.isArray(config.webSearch)
+      ? (config.webSearch as Record<string, unknown>)
+      : null;
+
+  if (webSearch?.scraperProvider === 'none') {
+    delete webSearch.scraperProvider;
+  }
+
+  const modelSpecs =
+    config.modelSpecs && typeof config.modelSpecs === 'object' && !Array.isArray(config.modelSpecs)
+      ? (config.modelSpecs as Record<string, unknown>)
+      : null;
+  const modelSpecList = Array.isArray(modelSpecs?.list) ? modelSpecs.list : null;
+
+  if (modelSpecList) {
+    for (const entry of modelSpecList) {
+      if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+        delete (entry as Record<string, unknown>).conversation_starters;
+      }
+    }
+  }
+
+  return normalized;
+}
+
+function validateCompatibilityFieldValue(
+  fieldPath: string,
+  value: unknown,
+): { success: true } | { success: false; error: string } | null {
+  if (fieldPath === WEBSEARCH_SCRAPER_PROVIDER_PATH && value === 'none') {
+    return { success: true };
+  }
+
+  if (MODEL_SPEC_STARTERS_PATH_RE.test(fieldPath)) {
+    if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
+      return { success: true };
+    }
+    return { success: false, error: 'Expected an array of strings' };
+  }
+
+  return null;
+}
 
 function unwrapSchema(schema: t.ZodSchemaLike): t.ZodSchemaLike {
   const seen = new Set<t.ZodSchemaLike>();
@@ -559,6 +671,11 @@ export function validateFieldValue(
   fieldPath: string,
   value: unknown,
 ): { success: true } | { success: false; error: string } {
+  const compatibilityResult = validateCompatibilityFieldValue(fieldPath, value);
+  if (compatibilityResult) {
+    return compatibilityResult;
+  }
+
   const segments = fieldPath.split('.');
   const subSchema = resolveSubSchema(configSchema as t.ZodSchemaLike, segments);
 
@@ -651,7 +768,7 @@ export const configSchemaTreeOptions = queryOptions({
 
 export const getConfigSchemaFields = createServerFn({ method: 'GET' }).handler(async () => {
   try {
-    const tree = extractSchemaTree(configSchema);
+    const tree = buildCompatSchemaTree(configSchema);
     for (const section of tree) {
       if (section.key === 'interface' && section.children) {
         section.children = filterInterfacePermissionChildren(section.children);
@@ -694,7 +811,8 @@ export const parseImportedYaml = createServerFn({ method: 'POST' })
       };
     }
 
-    const result = configSchema.safeParse(rawConfig);
+    const normalizedForValidation = normalizeImportedYamlForValidation(rawConfig);
+    const result = configSchema.safeParse(normalizedForValidation);
 
     if (!result.success) {
       return {
@@ -725,7 +843,7 @@ export const parseImportedYaml = createServerFn({ method: 'POST' })
       success: true,
       error: undefined,
       validationErrors: undefined,
-      appConfig: result.data as Record<string, t.ConfigValue>,
+      appConfig: rawConfig as Record<string, t.ConfigValue>,
     };
   });
 

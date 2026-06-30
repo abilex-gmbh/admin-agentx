@@ -3,15 +3,18 @@ import { describe, it, expect } from 'vitest';
 import type * as t from '@/types';
 import {
   coerceEnumValue,
+  getFieldSelectOptions,
   getControlType,
   getEnumOptions,
   getArrayItemType,
   splitUnionTypes,
 } from '@/components/configuration/utils';
 import {
+  buildCompatSchemaTree,
   extractSchemaTree,
   getZodTypeName,
   flattenTree,
+  normalizeImportedYamlForValidation,
   resolveSubSchema,
   validateFieldValue,
   parseIndexedArrayPath,
@@ -534,6 +537,21 @@ describe('real configSchema integration', () => {
       expect(getControlType(urlField)).toBe('text');
     }
   });
+
+  it('injects compatibility field for model spec conversation starters', () => {
+    const compatTree = buildCompatSchemaTree(realConfigSchema);
+    const modelSpecs = compatTree.find((field) => field.path === 'modelSpecs');
+    const modelSpecList = findField(modelSpecs?.children ?? [], 'list');
+    const conversationStarters = findField(modelSpecList?.children ?? [], 'conversation_starters');
+
+    expect(modelSpecs).toBeDefined();
+    expect(modelSpecList).toBeDefined();
+    expect(conversationStarters).toMatchObject({
+      path: 'modelSpecs.list.[].conversation_starters',
+      type: 'array<string>',
+      isArray: true,
+    });
+  });
 });
 
 /* ---------------------------------------------------------------------------
@@ -687,6 +705,24 @@ describe('validateFieldValue', () => {
     });
     const bad = validateFieldValue('mcpServers.foo.headers.Authorization', 42);
     expect(bad.success).toBe(false);
+  });
+
+  it('accepts web search scraperProvider set to none', () => {
+    expect(validateFieldValue('webSearch.scraperProvider', 'none')).toEqual({ success: true });
+  });
+
+  it('accepts model spec conversation starters arrays', () => {
+    expect(
+      validateFieldValue('modelSpecs.list.0.conversation_starters', ['First prompt', 'Second']),
+    ).toEqual({ success: true });
+  });
+
+  it('rejects invalid model spec conversation starters values', () => {
+    const result = validateFieldValue('modelSpecs.list.0.conversation_starters', [
+      'First prompt',
+      123,
+    ]);
+    expect(result.success).toBe(false);
   });
 });
 
@@ -1252,5 +1288,62 @@ describe('validateFieldValue for endpoints', () => {
   it('gracefully handles unknown deep paths', () => {
     const result = validateFieldValue('endpoints.custom.0.nonexistent.deep', 'value');
     expect(result).toEqual({ success: true });
+  });
+});
+
+describe('compatibility helpers', () => {
+  it('drops scraperProvider none during import validation normalization only', () => {
+    const input = {
+      webSearch: { scraperProvider: 'none', searchProvider: 'serper' },
+    };
+
+    const normalized = normalizeImportedYamlForValidation(input) as {
+      webSearch: { scraperProvider?: string; searchProvider: string };
+    };
+
+    expect(normalized.webSearch.searchProvider).toBe('serper');
+    expect(normalized.webSearch.scraperProvider).toBeUndefined();
+    expect(input.webSearch.scraperProvider).toBe('none');
+  });
+
+  it('drops conversation starters during import validation normalization only', () => {
+    const input = {
+      modelSpecs: {
+        list: [
+          {
+            name: 'gpt-4.1',
+            conversation_starters: ['Hello', 'Summarize this'],
+          },
+        ],
+      },
+    };
+
+    const normalized = normalizeImportedYamlForValidation(input) as {
+      modelSpecs: { list: Array<{ name: string; conversation_starters?: string[] }> };
+    };
+
+    expect(normalized.modelSpecs.list[0].name).toBe('gpt-4.1');
+    expect(normalized.modelSpecs.list[0].conversation_starters).toBeUndefined();
+    expect(input.modelSpecs.list[0].conversation_starters).toEqual(['Hello', 'Summarize this']);
+  });
+});
+
+describe('getFieldSelectOptions', () => {
+  it('adds none for web search scraper provider', () => {
+    const options = getFieldSelectOptions(
+      {
+        path: 'webSearch.scraperProvider',
+        key: 'scraperProvider',
+        type: 'enum(firecrawl | jina)',
+        isOptional: true,
+        isNullable: false,
+        isArray: false,
+        isObject: false,
+        depth: 1,
+      },
+      'webSearch.scraperProvider',
+    );
+
+    expect(options.map((option) => option.value)).toEqual(['firecrawl', 'jina', 'none']);
   });
 });

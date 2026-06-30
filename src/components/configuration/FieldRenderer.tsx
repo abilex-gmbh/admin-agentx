@@ -9,6 +9,7 @@ import {
   getArrayItemType,
   getControlType,
   getEnumOptions,
+  getFieldSelectOptions,
   hasDescendant,
   toKVPair,
   isStringLikeItemType,
@@ -232,7 +233,7 @@ export function SingleFieldRenderer({
   }
 
   if (controlType === 'select') {
-    const options = getEnumOptions(field.type);
+    const options = getFieldSelectOptions(field, path);
     const control = (
       <SelectField
         id={fieldId}
@@ -1009,7 +1010,7 @@ export function renderInlineField(
   }
 
   if (controlType === 'select') {
-    const options = getEnumOptions(field.type);
+    const options = getFieldSelectOptions(field, `${parentPath}.${field.key}`);
     return (
       <InlineRow key={field.key} label={fieldLabel} fieldId={fieldId} required={required}>
         <SelectField
