@@ -762,9 +762,24 @@ function InlineFieldRenderer({
   // Derive the parent collection key from the schema field paths when available.
   // For array-object entries (e.g. endpoints.custom[*]), the first field's path
   // is like "endpoints.custom.name" — extract "custom" as the collection key.
+  // For wildcard array entries (e.g. modelSpecs.list.[].name), use the full
+  // parent collection path ("modelSpecs.list") so progressive disclosure can
+  // target that entry shape without colliding with unrelated "list" keys.
   // Falls back to the last segment of parentPath.
   const parentKey = parentPath.split('.').pop() ?? '';
-  const schemaParentKey = fields[0]?.path ? fields[0].path.split('.').slice(-2, -1)[0] : undefined;
+  const schemaParentKey = (() => {
+    const fieldPath = fields[0]?.path;
+    if (!fieldPath) return undefined;
+    const segments = fieldPath.split('.');
+    const immediateParent = segments.at(-2);
+    if (immediateParent && immediateParent !== '[]') {
+      return immediateParent;
+    }
+    if (immediateParent === '[]') {
+      return segments.slice(0, -2).join('.');
+    }
+    return undefined;
+  })();
   const lookupKey =
     schemaParentKey &&
     (PROGRESSIVE_DISCLOSURE_PATHS.has(schemaParentKey) || FIELD_ORDER[schemaParentKey])
@@ -1175,7 +1190,7 @@ function InlineRow({
 /** Parent keys whose InlineFieldRenderer hides empty fields behind an "Add field"
  *  dropdown. Add new keys here when an object has too many optional fields to
  *  show by default (e.g. modelSpecs.list[].preset has 20+ fields). */
-const PROGRESSIVE_DISCLOSURE_PATHS = new Set(['preset', 'custom']);
+const PROGRESSIVE_DISCLOSURE_PATHS = new Set(['preset', 'custom', 'modelSpecs.list']);
 
 /** Optional field ordering for InlineFieldRenderer.  Fields listed here are
  *  placed first (in the given order) and are always visible even when
@@ -1183,6 +1198,20 @@ const PROGRESSIVE_DISCLOSURE_PATHS = new Set(['preset', 'custom']);
  *  and may be hidden behind "Add field" if progressive disclosure applies. */
 const FIELD_ORDER: Record<string, string[]> = {
   custom: ['name', 'apiKey', 'baseURL', 'iconURL', 'models', 'modelDisplayLabel'],
+  'modelSpecs.list': [
+    'name',
+    'label',
+    'preset',
+    'order',
+    'default',
+    'softDefault',
+    'description',
+    'group',
+    'groupIcon',
+    'showIconInMenu',
+    'showIconInHeader',
+    'showOnLanding',
+  ],
 };
 
 export function FieldRenderer({
