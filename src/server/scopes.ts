@@ -20,7 +20,7 @@ import { isInterfacePermissionPath } from '@/utils/interfacePermissions';
 import { BASE_CONFIG_PRINCIPAL_ID } from './constants';
 import { requireAnyCapability } from './capabilities';
 import { safeFieldPath } from './utils/validation';
-import { apiFetch } from './utils/api';
+import { apiFetch, readApiErrorMessage } from './utils/api';
 import { normalizeAppServiceKeys, parseIndexedArrayPath, mergeConfigArraySources } from './config';
 
 // ── Dot-path helpers ─────────────────────────────────────────────────
@@ -194,7 +194,8 @@ export const getBatchFieldProfilesFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }: { data: { paths: string[] } }) => {
     const response = await apiFetch('/api/admin/config');
     if (!response.ok) {
-      throw new Error(`Failed to fetch configs: ${response.status}`);
+      const message = await readApiErrorMessage(response, 'Failed to fetch configs');
+      return { profileMap: {}, error: message };
     }
     const { configs } = (await response.json()) as AdminConfigListResponse;
 

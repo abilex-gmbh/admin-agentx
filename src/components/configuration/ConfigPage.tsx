@@ -446,7 +446,13 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
   }, [queryClient, clearEdits]);
 
   const importMutation = useMutation({
-    mutationFn: (config: Record<string, t.ConfigValue>) => importBaseConfigFn({ data: { config } }),
+    mutationFn: async (config: Record<string, t.ConfigValue>) => {
+      const result = await importBaseConfigFn({ data: { config } });
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to import config');
+      }
+      return result;
+    },
     onError: (err: Error) => notifyError(err.message),
     onSuccess: invalidateAndResetBase,
   });

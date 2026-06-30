@@ -44,15 +44,35 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
   return fetch(url, buildInit(refreshedToken));
 }
 
+function stripHtmlTags(value: string): string {
+  return value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export async function readApiErrorMessage(response: Response, fallback: string): Promise<string> {
+  const rawText = await response.text().catch(() => '');
+
+  if (rawText) {
+    try {
+      const body = JSON.parse(rawText) as { error?: string; message?: string };
+      const message = body.error ?? body.message;
+      if (typeof message === 'string' && message.trim()) {
+        return message.trim();
+      }
+    } catch {
+      const text = stripHtmlTags(rawText);
+      if (text) {
+        return text;
+      }
+    }
+  }
+
+  return `${fallback}: ${response.status}`;
+}
+
 /**
  * Extract an error message from a failed API response and throw.
  * Handles both `{ error }` and `{ message }` response shapes.
  */
 export async function extractApiError(response: Response, fallback: string): Promise<never> {
-  const body = await response.json().catch(() => ({}));
-  const message =
-    (body as { error?: string }).error ??
-    (body as { message?: string }).message ??
-    `${fallback}: ${response.status}`;
-  throw new Error(message);
+  throw new Error(await readApiErrorMessage(response, fallback));
 }

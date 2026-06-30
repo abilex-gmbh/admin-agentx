@@ -19,7 +19,7 @@ import {
 import { BASE_CONFIG_PRINCIPAL_ID } from './constants';
 import { safeFieldPath } from './utils/validation';
 import { flattenObject } from '@/utils/format';
-import { apiFetch } from './utils/api';
+import { apiFetch, readApiErrorMessage } from './utils/api';
 
 const WRAPPER_TYPES = new Set([
   'ZodOptional',
@@ -1167,31 +1167,38 @@ export const saveBaseConfigFn = createServerFn({ method: 'POST' })
 export const importBaseConfigFn = createServerFn({ method: 'POST' })
   .inputValidator(z.object({ config: z.record(z.string(), z.unknown()) }))
   .handler(async ({ data }) => {
-    await requireCapability(SystemCapabilities.MANAGE_CONFIGS);
-    const overrides = { ...data.config };
-    if (
-      overrides.interface &&
-      typeof overrides.interface === 'object' &&
-      !Array.isArray(overrides.interface)
-    ) {
-      overrides.interface = stripInterfacePermissionFields(
-        overrides.interface as Record<string, unknown>,
-      );
+    try {
+      await requireCapability(SystemCapabilities.MANAGE_CONFIGS);
+      const overrides = { ...data.config };
+      if (
+        overrides.interface &&
+        typeof overrides.interface === 'object' &&
+        !Array.isArray(overrides.interface)
+      ) {
+        overrides.interface = stripInterfacePermissionFields(
+          overrides.interface as Record<string, unknown>,
+        );
+      }
+
+      const response = await apiFetch(`/api/admin/config/role/${BASE_CONFIG_PRINCIPAL_ID}`, {
+        method: 'PUT',
+        body: JSON.stringify({ overrides, priority: 0 }),
+      });
+
+      if (!response.ok) {
+        return {
+          success: false as const,
+          error: await readApiErrorMessage(response, 'Failed to import config'),
+        };
+      }
+
+      return { success: true as const };
+    } catch (error) {
+      return {
+        success: false as const,
+        error: error instanceof Error ? error.message : 'Failed to import config',
+      };
     }
-
-    const response = await apiFetch(`/api/admin/config/role/${BASE_CONFIG_PRINCIPAL_ID}`, {
-      method: 'PUT',
-      body: JSON.stringify({ overrides, priority: 0 }),
-    });
-
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(
-        (err as { error?: string }).error ?? `Failed to import config: ${response.status}`,
-      );
-    }
-
-    return { success: true };
   });
 
 export const resetBaseConfigFieldFn = createServerFn({ method: 'POST' })
