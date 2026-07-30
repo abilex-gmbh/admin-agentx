@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { z as z3 } from 'zod-v3';
 import yaml from 'js-yaml';
 import { queryOptions } from '@tanstack/react-query';
 import { configSchema } from 'librechat-data-provider';
@@ -20,6 +21,40 @@ import { BASE_CONFIG_PRINCIPAL_ID } from './constants';
 import { safeFieldPath } from './utils/validation';
 import { flattenObject } from '@/utils/format';
 import { apiFetch, readApiErrorMessage } from './utils/api';
+
+const streamingAnimationPresetSchema = z3.object({
+  animation: z3.enum(['fadeIn', 'blurIn', 'slideUp']),
+  duration: z3.number().int().min(0).max(2000),
+  easing: z3.string().min(1),
+  sep: z3.enum(['word', 'char']),
+  stagger: z3.number().int().min(0).max(500),
+});
+
+const streamingConfigSchema = z3.object({
+  enabled: z3.boolean(),
+  defaultMode: z3.enum(['character', 'word', 'sentence', 'instant']),
+  cursor: z3.enum(['circle', 'block', 'none']),
+  presets: z3.object({
+    character: streamingAnimationPresetSchema,
+    word: streamingAnimationPresetSchema,
+    sentence: streamingAnimationPresetSchema,
+  }),
+});
+
+const upstreamInterfaceSchema = configSchema.shape.interface._def.innerType;
+
+/**
+ * AgentX fields may land ahead of the published data-provider package used by
+ * this independently released panel. Keep its form schema and YAML validator
+ * aligned with the LibreChat image until the upstream package catches up.
+ */
+export const agentxConfigSchema = configSchema.extend({
+  interface: upstreamInterfaceSchema
+    .extend({
+      streaming: streamingConfigSchema.optional(),
+    })
+    .default({}),
+});
 
 const WRAPPER_TYPES = new Set([
   'ZodOptional',
@@ -677,7 +712,7 @@ export function validateFieldValue(
   }
 
   const segments = fieldPath.split('.');
-  const subSchema = resolveSubSchema(configSchema as t.ZodSchemaLike, segments);
+  const subSchema = resolveSubSchema(agentxConfigSchema as t.ZodSchemaLike, segments);
 
   if (!subSchema) return { success: true };
 
@@ -709,7 +744,7 @@ export function parseIndexedArrayPath(
   const match = INDEXED_ARRAY_RE.exec(fieldPath);
   if (!match) return null;
   const [, arrayPath, indexStr] = match;
-  const schema = resolveSubSchema(configSchema as t.ZodSchemaLike, arrayPath.split('.'));
+  const schema = resolveSubSchema(agentxConfigSchema as t.ZodSchemaLike, arrayPath.split('.'));
   if (!schema) return null;
   const unwrapped = unwrapSchema(schema);
   if (unwrapped?._def?.typeName !== 'ZodArray') return null;
@@ -768,7 +803,7 @@ export const configSchemaTreeOptions = queryOptions({
 
 export const getConfigSchemaFields = createServerFn({ method: 'GET' }).handler(async () => {
   try {
-    const tree = buildCompatSchemaTree(configSchema);
+    const tree = buildCompatSchemaTree(agentxConfigSchema);
     for (const section of tree) {
       if (section.key === 'interface' && section.children) {
         section.children = filterInterfacePermissionChildren(section.children);
@@ -812,7 +847,7 @@ export const parseImportedYaml = createServerFn({ method: 'POST' })
     }
 
     const normalizedForValidation = normalizeImportedYamlForValidation(rawConfig);
-    const result = configSchema.safeParse(normalizedForValidation);
+    const result = agentxConfigSchema.safeParse(normalizedForValidation);
 
     if (!result.success) {
       return {
@@ -1003,7 +1038,7 @@ export const getBaseConfigFn = createServerFn({ method: 'GET' }).handler(async (
   let configuredFromBase: string[] = [];
   let flatDefaults: Record<string, t.ConfigValue> = {};
   try {
-    const schemaDefaults = extractSchemaDefaults(configSchema as t.ZodSchemaLike);
+    const schemaDefaults = extractSchemaDefaults(agentxConfigSchema as t.ZodSchemaLike);
     flatDefaults = flattenObject(schemaDefaults as Record<string, t.ConfigValue>);
     configuredFromBase = computeConfiguredPaths(config, schemaDefaults);
   } catch (e) {

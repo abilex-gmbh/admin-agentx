@@ -10,6 +10,7 @@ import {
   splitUnionTypes,
 } from '@/components/configuration/utils';
 import {
+  agentxConfigSchema,
   buildCompatSchemaTree,
   extractSchemaTree,
   getZodTypeName,
@@ -78,6 +79,10 @@ function findField(fields: t.SchemaField[], key: string): t.SchemaField | undefi
     }
   }
   return undefined;
+}
+
+function findFieldByPath(fields: t.SchemaField[], path: string): t.SchemaField | undefined {
+  return flattenTree(fields).find((field) => field.path === path);
 }
 
 describe('extractSchemaTree', () => {
@@ -468,8 +473,7 @@ describe('ZodPipeline handling', () => {
  * Real configSchema integration tests
  * -----------------------------------------------------------------------*/
 
-const ldpModule = require3('librechat-data-provider') as { configSchema: ZodV3Schema };
-const realConfigSchema = ldpModule.configSchema;
+const realConfigSchema = agentxConfigSchema as ZodV3Schema;
 const realSchemaTree = extractSchemaTree(realConfigSchema);
 
 describe('real configSchema integration', () => {
@@ -513,6 +517,51 @@ describe('real configSchema integration', () => {
     expect(field!.isObject).toBe(true);
     expect(field!.children).toBeDefined();
     expect(field!.children!.length).toBeGreaterThan(0);
+  });
+
+  it('exposes all streaming animation controls', () => {
+    expect(findFieldByPath(tree, 'interface.streaming.enabled')?.type).toBe('boolean');
+    expect(findFieldByPath(tree, 'interface.streaming.defaultMode')?.type).toContain('enum(');
+    expect(findFieldByPath(tree, 'interface.streaming.cursor')?.type).toContain('enum(');
+    expect(findFieldByPath(tree, 'interface.streaming.presets.word.duration')?.type).toBe('number');
+    expect(findFieldByPath(tree, 'interface.streaming.presets.word.easing')?.type).toBe('string');
+    expect(findFieldByPath(tree, 'interface.streaming.presets.word.sep')?.type).toContain('enum(');
+    expect(findFieldByPath(tree, 'interface.streaming.presets.word.stagger')?.type).toBe('number');
+  });
+
+  it('validates a complete streaming configuration', () => {
+    const preset = {
+      animation: 'fadeIn',
+      duration: 420,
+      easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
+      sep: 'word',
+      stagger: 12,
+    };
+    const result = realConfigSchema.safeParse({
+      version: '1.2.1',
+      interface: {
+        streaming: {
+          enabled: true,
+          defaultMode: 'word',
+          cursor: 'circle',
+          presets: {
+            character: { ...preset, sep: 'char' },
+            word: preset,
+            sentence: { ...preset, duration: 520, stagger: 22 },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects invalid streaming animation values', () => {
+    expect(validateFieldValue('interface.streaming.presets.word.duration', 2001)).toEqual({
+      success: false,
+      error: 'Number must be less than or equal to 2000',
+    });
+    expect(validateFieldValue('interface.streaming.defaultMode', 'paragraph').success).toBe(false);
   });
 
   it('resolves version as string → text', () => {

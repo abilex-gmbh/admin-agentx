@@ -4,15 +4,14 @@
  * their raw key (e.g. `com_config_field_thinkingLevel`) in the UI.
  */
 import { describe, it, expect } from 'vitest';
-import { configSchema } from 'librechat-data-provider';
 import type { ZodSchemaLike } from '@/types/config';
-import { extractSchemaTree, flattenTree } from '@/server/config';
+import { agentxConfigSchema, extractSchemaTree, flattenTree } from '@/server/config';
 import translation from '@/locales/en/translation.json';
 
 const localeKeys = new Set(Object.keys(translation));
 
 describe('config field localization coverage', () => {
-  const tree = extractSchemaTree(configSchema as ZodSchemaLike);
+  const tree = extractSchemaTree(agentxConfigSchema as ZodSchemaLike);
   const allFields = flattenTree(tree);
 
   it('every schema field has a com_config_field_* locale key', () => {
