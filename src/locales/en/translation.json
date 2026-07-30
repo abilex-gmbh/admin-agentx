@@ -242,6 +242,7 @@
   "com_config_field_easing": "Easing curve",
   "com_config_field_sep": "Text separator",
   "com_config_field_stagger": "Stagger (ms)",
+  "com_config_field_maxDelay": "Maximum cascade delay (ms)",
   "com_config_field_turnstile": "Turnstile",
   "com_config_field_fileStrategy": "File strategy",
   "com_config_field_fileStrategies": "File strategies",

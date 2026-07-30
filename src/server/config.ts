@@ -28,6 +28,7 @@ const streamingAnimationPresetSchema = z3.object({
   easing: z3.string().min(1),
   sep: z3.enum(['word', 'char']),
   stagger: z3.number().int().min(0).max(500),
+  maxDelay: z3.number().int().min(0).max(500),
 });
 
 const streamingConfigSchema = z3.object({

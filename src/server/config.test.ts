@@ -536,6 +536,7 @@ describe('real configSchema integration', () => {
       easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
       sep: 'word',
       stagger: 12,
+      maxDelay: 35,
     };
     const result = realConfigSchema.safeParse({
       version: '1.2.1',
@@ -562,6 +563,7 @@ describe('real configSchema integration', () => {
       error: 'Number must be less than or equal to 2000',
     });
     expect(validateFieldValue('interface.streaming.defaultMode', 'paragraph').success).toBe(false);
+    expect(validateFieldValue('interface.streaming.presets.word.maxDelay', 501).success).toBe(false);
   });
 
   it('resolves version as string → text', () => {
