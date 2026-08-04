@@ -40,7 +40,10 @@ if (!process.env.SESSION_SECRET && process.env.NODE_ENV === 'development') {
   );
 }
 
-const sessionCookiePath = process.env.VITE_BASE_PATH || '/';
+/** ADMIN_BASE_PATH is present at runtime in the container, while VITE_BASE_PATH
+ * only exists in client build settings. Prefer the runtime value so the first
+ * server-function response establishes a cookie usable below `/admin`. */
+const sessionCookiePath = process.env.ADMIN_BASE_PATH || process.env.VITE_BASE_PATH || '/';
 
 export function useAppSession(): ReturnType<typeof useSession<t.SessionData>> {
   return useSession<t.SessionData>({

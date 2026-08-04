@@ -14,6 +14,7 @@ const ROUTE_TITLE_KEYS: Record<string, string> = {
   '/': 'com_dash_title',
   '/configuration': 'com_config_title',
   '/users': 'com_users_title',
+  '/observability': 'com_observability_title',
   '/access': 'com_access_title',
   '/grants': 'com_grants_title',
   '/help': 'com_help_title',

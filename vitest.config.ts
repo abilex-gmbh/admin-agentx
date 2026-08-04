@@ -6,6 +6,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    env: { SESSION_SECRET: 'test-only-session-secret-with-32-characters' },
     setupFiles: ['./src/test/setup.ts'],
     exclude: ['e2e/**', 'node_modules/**', 'tools/**'],
   },

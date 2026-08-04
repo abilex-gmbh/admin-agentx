@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom';
 import { Icon } from '@clickhouse/click-ui';
+import yaml from 'js-yaml';
 import { PrincipalType } from 'librechat-data-provider';
 import { getRouteApi, useBlocker, useNavigate } from '@tanstack/react-router';
 import { useState, useMemo, useRef, useCallback, useEffect, startTransition } from 'react';
@@ -882,6 +883,18 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
     return undefined;
   })();
 
+  const handleExportYaml = useCallback(() => {
+    const config = activeConfigValues ?? configValues;
+    if (!config) return;
+    const content = yaml.dump(config, { noRefs: true, lineWidth: 120 });
+    const url = URL.createObjectURL(new Blob([content], { type: 'text/yaml;charset=utf-8' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'librechat.yaml';
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }, [activeConfigValues, configValues]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden pt-2">
       <div className="shrink-0 px-4">
@@ -895,6 +908,7 @@ export function ConfigPage({ initialTab, highlightField, initialScope }: t.Confi
               : undefined
           }
           onImportClick={() => setImportOpen(true)}
+          onExportClick={handleExportYaml}
           showReset={!isEditingScope && dbOverridePaths.size > 0}
           resetDisabled={isDirty || !canManageConfig}
           resetTitle={resetBaseTitle}
@@ -1024,6 +1038,7 @@ function HeaderActions({
   importDisabled,
   importTitle,
   onImportClick,
+  onExportClick,
   showReset,
   resetDisabled,
   resetTitle,
@@ -1036,6 +1051,7 @@ function HeaderActions({
   importDisabled: boolean;
   importTitle?: string;
   onImportClick: () => void;
+  onExportClick: () => void;
   showReset: boolean;
   resetDisabled: boolean;
   resetTitle?: string;
@@ -1068,6 +1084,14 @@ function HeaderActions({
           {localize('com_config_import_yaml')}
         </button>
       )}
+      <button
+        type="button"
+        onClick={onExportClick}
+        className="flex shrink-0 items-center gap-1 rounded border border-(--cui-color-stroke-default) bg-transparent px-2 py-1 text-xs text-(--cui-color-text-default) hover:bg-(--cui-color-background-hover)"
+      >
+        <Icon name="download" size="xs" />
+        {localize('com_config_export_yaml')}
+      </button>
       {showReset && (
         <button
           type="button"

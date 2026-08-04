@@ -20,7 +20,7 @@ export function ConfigRow({
   onResetField,
   isConfigured,
   isDbOverride,
-  isTouched,
+  isTouched: _isTouched,
   isPendingReset,
   defaultHint,
 }: t.ConfigRowProps) {
@@ -81,7 +81,6 @@ export function ConfigRow({
         'config-row flex w-full gap-6 rounded-md px-2.5 py-2 transition-opacity',
         hasSubContent ? 'items-start' : 'items-center',
         isPendingReset && 'opacity-50',
-        !isPendingReset && !isConfigured && !isTouched && 'opacity-50',
       )}
     >
       <SectionHeader
